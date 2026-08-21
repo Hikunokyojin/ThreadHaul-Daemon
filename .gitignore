@@ -7,3 +7,4 @@ Release/
 *.exe
 *.pdb
 *.ilk
+*.vcxproj.user 
