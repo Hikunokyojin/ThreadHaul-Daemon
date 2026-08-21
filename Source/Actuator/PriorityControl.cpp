@@ -1,4 +1,3 @@
-// PriorityControl.cpp
 #include "PriorityControl.h"
 
 namespace actuator {
@@ -14,7 +13,7 @@ DWORD ToWin32PriorityClass(PriorityLevel level) {
     return NORMAL_PRIORITY_CLASS;
 }
 
-} // namespace
+}
 
 PriorityChangeResult SetProcessPriority(DWORD processId, PriorityLevel level) {
     HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, processId);
@@ -24,7 +23,6 @@ PriorityChangeResult SetProcessPriority(DWORD processId, PriorityLevel level) {
             return PriorityChangeResult::AccessDenied;
         }
         if (err == ERROR_INVALID_PARAMETER) {
-            // Typically means the PID no longer exists (process exited).
             return PriorityChangeResult::ProcessNotFound;
         }
         return PriorityChangeResult::OtherError;
@@ -62,4 +60,4 @@ bool IsRunningElevated() {
     return isElevated != FALSE;
 }
 
-} // namespace actuator
+}

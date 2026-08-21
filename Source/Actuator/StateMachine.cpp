@@ -1,4 +1,3 @@
-// StateMachine.cpp
 #include "StateMachine.h"
 #include "PriorityControl.h"
 #include "ThreadControl.h"
@@ -17,7 +16,6 @@ ProcessStateMachine::ProcessStateMachine(std::wstring batchProcessName,
 bool ProcessStateMachine::Update(double criticalProcessCpuPercent) {
     const ProcessState stateBefore = state_;
 
-    // --- consecutive-sample counters, mirroring spec Section 3.3 ---
     if (criticalProcessCpuPercent >= config_.throttleThresholdPercent) {
         consecutiveHigh_++;
     } else {
@@ -56,7 +54,6 @@ bool ProcessStateMachine::Update(double criticalProcessCpuPercent) {
 void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent) {
     const ProcessState oldState = state_;
 
-    // Apply the actual Win32 side effect for this transition.
     switch (newState) {
         case ProcessState::Throttled:
             SetProcessPriority(batchProcessId_, PriorityLevel::Idle);
@@ -67,13 +64,6 @@ void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent)
             break;
 
         case ProcessState::Normal:
-            // Recovering from Suspended requires resuming threads first;
-            // recovering from Throttled only requires restoring priority.
-            // Calling ResumeAllThreads when nothing was suspended is a
-            // harmless no-op (zero threads attempted only if the process
-            // has no matching snapshot entries -- otherwise it's a benign
-            // extra resume call, which is safe here because Suspend/Resume
-            // are only ever invoked in this single symmetric pairing).
             if (oldState == ProcessState::Suspended) {
                 ResumeAllThreads(batchProcessId_);
             }
@@ -83,9 +73,6 @@ void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent)
 
     state_ = newState;
 
-    // Reset the counters that drove this transition so the next state
-    // starts counting fresh (prevents an immediately-repeated transition
-    // off stale counter values).
     consecutiveHigh_ = 0;
     consecutiveCritical_ = 0;
     consecutiveLow_ = 0;
@@ -97,13 +84,9 @@ void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent)
 
 void ProcessStateMachine::ForceRecoverForShutdown() {
     if (state_ == ProcessState::Normal) {
-        return; // nothing to restore
+        return;
     }
-    // Reuses the same Normal-transition logic (resumes threads if needed,
-    // restores NORMAL priority), satisfying the "graceful shutdown" item:
-    // no batch process should be left throttled/suspended after the
-    // service itself stops.
     TransitionTo(ProcessState::Normal, 0.0);
 }
 
-} // namespace actuator
+}

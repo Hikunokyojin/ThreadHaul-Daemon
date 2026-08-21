@@ -1,4 +1,3 @@
-// ActuatorManager.cpp
 #include "ActuatorManager.h"
 
 namespace actuator {
@@ -10,7 +9,7 @@ ActuatorManager::ActuatorManager(StateMachineConfig config,
 
 void ActuatorManager::AddBatchProcess(const std::wstring& processName, DWORD processId) {
     if (machines_.find(processId) != machines_.end()) {
-        return; // already managed
+        return;
     }
     machines_[processId] = std::make_unique<ProcessStateMachine>(
         processName, processId, config_, onTransition_);
@@ -32,4 +31,4 @@ void ActuatorManager::ForceRecoverAllForShutdown() {
     }
 }
 
-} // namespace actuator
+}

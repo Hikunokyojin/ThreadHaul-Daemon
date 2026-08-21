@@ -1,13 +1,9 @@
-// ThreadControl.cpp
 #include "ThreadControl.h"
 #include <tlhelp32.h>
 
 namespace actuator {
 
 namespace {
-
-// Collects the thread IDs belonging to processId using a Toolhelp32
-// snapshot, per the spec's description of thread-level enumeration.
 std::vector<DWORD> EnumerateThreadIds(DWORD processId) {
     std::vector<DWORD> threadIds;
 
@@ -31,7 +27,7 @@ std::vector<DWORD> EnumerateThreadIds(DWORD processId) {
     return threadIds;
 }
 
-} // namespace
+}
 
 ThreadOpResult SuspendAllThreads(DWORD processId) {
     ThreadOpResult result;
@@ -42,10 +38,6 @@ ThreadOpResult SuspendAllThreads(DWORD processId) {
 
         HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, tid);
         if (hThread == nullptr) {
-            // Thread may have exited between enumeration and this call, or
-            // access was denied (e.g. a protected process). Either way this
-            // is a Review-II-hardened race condition; for Review I we count
-            // it as a failed thread and continue with the rest.
             result.threadsFailed++;
             continue;
         }
@@ -89,4 +81,4 @@ ThreadOpResult ResumeAllThreads(DWORD processId) {
     return result;
 }
 
-} // namespace actuator
+}
