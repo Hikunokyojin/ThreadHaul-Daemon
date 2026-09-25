@@ -44,5 +44,8 @@
     <ClInclude Include="ThreadControl.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ThresholdEvent.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -19,6 +19,13 @@ void ActuatorManager::RemoveBatchProcess(DWORD processId) {
     machines_.erase(processId);
 }
 
+void ActuatorManager::OnThresholdEvent(const ThresholdEvent& evt) {
+    // See INTERFACES.md section 2: evt.criticalProcessId is informational
+    // context only. The actual state-machine input is the observed CPU%,
+    // applied to every batch process this manager already owns.
+    UpdateAll(evt.observedCpuPercent);
+}
+
 void ActuatorManager::UpdateAll(double criticalProcessCpuPercent) {
     for (auto& [pid, machine] : machines_) {
         machine->Update(criticalProcessCpuPercent);

@@ -17,10 +17,20 @@ HANDLE                 g_stopEvent = nullptr;
 
 std::unique_ptr<actuator::ActuatorManager> g_actuatorManager;
 
+// INTEGRATION POINT -- not Divik's to implement. This is a placeholder for
+// Prakul's Telemetry layer. Once Telemetry exists, this whole poll loop
+// should be replaced by Telemetry calling g_actuatorManager->OnThresholdEvent(evt)
+// directly (per INTERFACES.md section 2), rather than Actuator pulling a CPU%
+// itself. Left as a stub returning 0.0 so this module still builds and runs
+// standalone in the meantime.
 double GetCriticalProcessCpuPercent() {
     return 0.0;
 }
 
+// INTEGRATION POINT -- not Divik's to implement. This is a placeholder for
+// Pranav's Config layer (config.json parsing, per INTERFACES.md section 4).
+// Left as a stub returning an empty list so this module still builds and
+// runs standalone (managing zero batch processes) in the meantime.
 std::vector<std::pair<std::wstring, DWORD>> GetConfiguredBatchProcesses() {
     return {};
 }
@@ -45,6 +55,13 @@ void WINAPI ServiceCtrlHandler(DWORD ctrlCode) {
 
 DWORD WINAPI WorkerThreadProc(LPVOID) {
     actuator::StateMachineConfig config;
+    // LOGGING INTEGRATION POINT -- not Divik's to implement. This callback
+    // fires on every real state transition (batchProcessName, batchProcessId,
+    // oldState, newState, cpuPercentAtTransition -- see StateMachine.h). Per
+    // INTERFACES.md section 3.3, Pranav's centralized logger should be wired
+    // in here to write the actuator_action JSON Lines entry. Left as an
+    // explicit no-op (not silently missing) so it's clear this is the exact
+    // seam to replace, not something left unfinished by accident.
     g_actuatorManager = std::make_unique<actuator::ActuatorManager>(
         config,
         [](const std::wstring& name, DWORD pid, actuator::ProcessState oldState,

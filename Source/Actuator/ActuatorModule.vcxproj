@@ -148,6 +148,7 @@
     <ClInclude Include="PriorityControl.h" />
     <ClInclude Include="StateMachine.h" />
     <ClInclude Include="ThreadControl.h" />
+    <ClInclude Include="ThresholdEvent.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
