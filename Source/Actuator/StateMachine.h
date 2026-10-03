@@ -35,7 +35,8 @@ using TransitionCallback = std::function<void(
     DWORD               batchProcessId,
     ProcessState        oldState,
     ProcessState        newState,
-    double              cpuPercentAtTransition)>;
+    double              cpuPercentAtTransition,
+    bool                actuationSucceeded)>;
 
 class ProcessStateMachine {
 public:
@@ -43,8 +44,18 @@ public:
                          DWORD batchProcessId,
                          StateMachineConfig config,
                          TransitionCallback onTransition = nullptr);
+    ~ProcessStateMachine();
+    ProcessStateMachine(const ProcessStateMachine&) = delete;
+    ProcessStateMachine& operator=(const ProcessStateMachine&) = delete;
+
     bool Update(double criticalProcessCpuPercent);
     void ForceRecoverForShutdown();
+
+    // True once the managed process has exited. While we hold a handle to it
+    // Windows cannot recycle its PID, so false also means the PID still refers
+    // to the process we started managing. If the handle could not be opened at
+    // construction the exit state is unknown and this returns false.
+    bool HasExited() const;
 
     ProcessState CurrentState() const { return state_; }
     const std::wstring& BatchProcessName() const { return batchProcessName_; }
@@ -55,6 +66,7 @@ private:
 
     std::wstring batchProcessName_;
     DWORD        batchProcessId_;
+    HANDLE       processHandle_ = nullptr;
     StateMachineConfig config_;
     TransitionCallback onTransition_;
 

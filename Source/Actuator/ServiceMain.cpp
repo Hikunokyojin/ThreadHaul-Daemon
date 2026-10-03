@@ -57,7 +57,8 @@ DWORD WINAPI WorkerThreadProc(LPVOID) {
     actuator::StateMachineConfig config;
     // LOGGING INTEGRATION POINT -- not Divik's to implement. This callback
     // fires on every real state transition (batchProcessName, batchProcessId,
-    // oldState, newState, cpuPercentAtTransition -- see StateMachine.h). Per
+    // oldState, newState, cpuPercentAtTransition, actuationSucceeded -- see
+    // StateMachine.h). Per
     // INTERFACES.md section 3.3, Pranav's centralized logger should be wired
     // in here to write the actuator_action JSON Lines entry. Left as an
     // explicit no-op (not silently missing) so it's clear this is the exact
@@ -65,8 +66,9 @@ DWORD WINAPI WorkerThreadProc(LPVOID) {
     g_actuatorManager = std::make_unique<actuator::ActuatorManager>(
         config,
         [](const std::wstring& name, DWORD pid, actuator::ProcessState oldState,
-           actuator::ProcessState newState, double cpuPercent) {
+           actuator::ProcessState newState, double cpuPercent, bool actuationSucceeded) {
             (void)name; (void)pid; (void)oldState; (void)newState; (void)cpuPercent;
+            (void)actuationSucceeded;
         });
 
     for (const auto& [name, pid] : GetConfiguredBatchProcesses()) {

@@ -27,8 +27,13 @@ void ActuatorManager::OnThresholdEvent(const ThresholdEvent& evt) {
 }
 
 void ActuatorManager::UpdateAll(double criticalProcessCpuPercent) {
-    for (auto& [pid, machine] : machines_) {
-        machine->Update(criticalProcessCpuPercent);
+    for (auto it = machines_.begin(); it != machines_.end();) {
+        if (it->second->HasExited()) {
+            it = machines_.erase(it);
+            continue;
+        }
+        it->second->Update(criticalProcessCpuPercent);
+        ++it;
     }
 }
 

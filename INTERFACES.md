@@ -96,8 +96,10 @@ Owner: Pranav defines and owns this schema centrally; Prakul and Divik's layers 
 **Status: CONFIRMED against `Source/Actuator/StateMachine.cpp` (Divik, 2026-09-25).**
 
 ```json
-{"log_type": "actuator_action", "timestamp": "2026-09-24T14:03:24.550Z", "batch_process_id": 5190, "batch_process_name": "invoice_batch.exe", "critical_process_id": 4821, "action": "priority_lowered", "from_state": "normal", "to_state": "throttled"}
+{"log_type": "actuator_action", "timestamp": "2026-09-24T14:03:24.550Z", "batch_process_id": 5190, "batch_process_name": "invoice_batch.exe", "critical_process_id": 4821, "action": "priority_lowered", "from_state": "normal", "to_state": "throttled", "actuation_succeeded": true}
 ```
+
+**`[PROPOSED]` field added 2026-10-03 — needs Pranav's and Prakul's ack per §5 before it is binding:** `actuation_succeeded` (boolean). `StateMachine`'s `TransitionCallback` now ends with a `bool actuationSucceeded` parameter. It is `false` when the OS call did not fully take effect: `SetPriorityClass` was denied or failed, not every thread of the batch process could be suspended or resumed, or the batch process had already exited. The state still advances so the machine does not retry forever; the flag lets the log show that a transition was recorded but not fully applied. Pranav's logger should write it through as `actuation_succeeded`.
 
 **Fields changed from the original placeholder — flagged per §5 Change Protocol:**
 - `process_id` → split into `batch_process_id` (the PID Actuator actually acted on — this is what `SetProcessPriority`/`SuspendAllThreads`/`ResumeAllThreads` were called on) and `critical_process_id` (the PID whose CPU% triggered the transition, carried through from §2's `ThresholdEvent.criticalProcessId`). The original single `process_id` was ambiguous about which PID it meant; `StateMachine`'s real `TransitionCallback` only has the batch PID/name plus the CPU% at transition — it does not itself know the critical process's PID, so Pranav's/Prakul's logging wiring will need to thread `criticalProcessId` through from the originating `ThresholdEvent` when writing this line.
