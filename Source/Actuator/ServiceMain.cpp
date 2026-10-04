@@ -35,6 +35,14 @@ std::vector<std::pair<std::wstring, DWORD>> GetConfiguredBatchProcesses() {
     return {};
 }
 
+// INTEGRATION POINT -- not Divik's to implement. Placeholder for the
+// "protected_processes" list in Pranav's config (proposed in INTERFACES.md
+// section 4). ActuatorManager always protects this service and core Windows
+// processes on its own, so an empty list here is still safe.
+std::vector<std::wstring> GetConfiguredProtectedProcesses() {
+    return {};
+}
+
 void WINAPI ServiceCtrlHandler(DWORD ctrlCode) {
     switch (ctrlCode) {
         case SERVICE_CONTROL_STOP:
@@ -70,6 +78,8 @@ DWORD WINAPI WorkerThreadProc(LPVOID) {
             (void)name; (void)pid; (void)oldState; (void)newState; (void)cpuPercent;
             (void)actuationSucceeded;
         });
+
+    g_actuatorManager->SetProtectedProcessNames(GetConfiguredProtectedProcesses());
 
     for (const auto& [name, pid] : GetConfiguredBatchProcesses()) {
         g_actuatorManager->AddBatchProcess(name, pid);

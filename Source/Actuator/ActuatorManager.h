@@ -13,7 +13,17 @@ public:
     explicit ActuatorManager(StateMachineConfig config,
                               TransitionCallback onTransition = nullptr);
 
-    void AddBatchProcess(const std::wstring& processName, DWORD processId);
+    // Returns false (and does not manage the process) if it is protected.
+    bool AddBatchProcess(const std::wstring& processName, DWORD processId);
+
+    // Replaces the configured protection list. Any currently managed process
+    // that is now protected is restored to normal and dropped.
+    void SetProtectedProcessNames(std::vector<std::wstring> names);
+
+    // True for this service's own process, a fixed set of Windows processes
+    // whose suspension would hang the system, and any configured name.
+    // Names are compared case-insensitively against the executable name.
+    bool IsProtected(const std::wstring& processName, DWORD processId) const;
 
     void RemoveBatchProcess(DWORD processId);
 
@@ -34,6 +44,7 @@ public:
 private:
     StateMachineConfig config_;
     TransitionCallback onTransition_;
+    std::vector<std::wstring> protectedNames_;
     std::unordered_map<DWORD, std::unique_ptr<ProcessStateMachine>> machines_;
 };
 

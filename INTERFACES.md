@@ -146,6 +146,8 @@ Owner: Pranav. Consumed by all three layers at startup (each layer reads only th
 }
 ```
 
+**`[PROPOSED]` by Divik 2026-10-03 — needs Pranav's ack per §5:** add a top-level `"protected_processes"` array of executable names, for example `["explorer.exe", "sqlservr.exe"]`. Actuator passes it to `ActuatorManager::SetProtectedProcessNames`; any batch process whose name matches (case-insensitive, exact executable name, no wildcards) is never throttled or suspended. On hot-reload, a managed process that becomes protected is restored to normal priority and released. Actuator also protects its own process and a fixed set of core Windows processes (`System`, `Registry`, `smss.exe`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe`, `lsass.exe`) whether or not they appear in this list, so the config cannot remove those.
+
 **Open question:** rotation policy (size-based above, vs. daily) — Pranav's call, flag it as a milestone decision rather than guessing.
 
 ---
