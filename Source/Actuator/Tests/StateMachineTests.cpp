@@ -160,6 +160,26 @@ void ReportsFailedActuationForMissingProcess() {
           "actuation on a nonexistent PID is reported as failed");
 }
 
+// The one test that uses a real process: a short-lived ping child. It checks
+// the SYNCHRONIZE-only handle can tell a running process from an exited one,
+// which is what keeps a recycled PID from being acted on.
+void DetectsExitOfRealProcess() {
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    wchar_t cmd[] = L"ping -n 3 127.0.0.1";
+    if (!CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &si, &pi)) {
+        Check(false, __func__, "could not start ping child");
+        return;
+    }
+    ProcessStateMachine m(L"PING.EXE", pi.dwProcessId, {});
+    Check(!m.HasExited(), __func__, "running process is not reported as exited");
+    WaitForSingleObject(pi.hProcess, 10000);
+    Check(m.HasExited(), __func__, "exited process is reported as exited");
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
 void CustomConfigIsRespected() {
     StateMachineConfig cfg;
     cfg.throttleThresholdPercent = 50;
@@ -196,6 +216,7 @@ int main() {
     NormalIgnoresLowSamples();
     ForceRecoverForShutdown();
     ReportsFailedActuationForMissingProcess();
+    DetectsExitOfRealProcess();
     CustomConfigIsRespected();
     ManagerForwardsThresholdEvents();
 

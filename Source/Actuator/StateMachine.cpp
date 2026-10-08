@@ -12,8 +12,7 @@ ProcessStateMachine::ProcessStateMachine(std::wstring batchProcessName,
     , batchProcessId_(batchProcessId)
     , config_(config)
     , onTransition_(std::move(onTransition)) {
-    processHandle_ = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
-                                 FALSE, batchProcessId_);
+    processHandle_ = OpenProcess(SYNCHRONIZE, FALSE, batchProcessId_);
 }
 
 ProcessStateMachine::~ProcessStateMachine() {
