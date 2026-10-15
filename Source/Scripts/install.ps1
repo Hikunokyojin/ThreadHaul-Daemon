@@ -100,13 +100,31 @@ if (-not [System.Diagnostics.EventLog]::SourceExists($ServiceName)) {
 
 $binPath = "`"$Exe`" --config `"$ConfigPath`""
 $obj = if ($Account -eq 'LocalService') { 'NT AUTHORITY\LocalService' } else { 'LocalSystem' }
-sc.exe create $ServiceName binPath= $binPath start= auto obj= $obj DisplayName= 'ThreadHaul Resource Monitor' | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "sc.exe create failed ($LASTEXITCODE)" }
-sc.exe description $ServiceName 'Protects critical dispatch processes from CPU starvation by throttling and suspending batch processes.' | Out-Null
-sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/30000 | Out-Null
+# New-Service, not "sc.exe create": Windows PowerShell 5.1 strips the inner
+# quotes of a native-command argument, which breaks a binPath containing
+# spaces ("C:\Program Files\...") and makes sc.exe fail with 1639.
+$newService = @{
+    Name           = $ServiceName
+    BinaryPathName = $binPath
+    DisplayName    = 'ThreadHaul Resource Monitor'
+    Description    = 'Protects critical dispatch processes from CPU starvation by throttling and suspending batch processes.'
+    StartupType    = 'Automatic'
+}
+if ($Account -eq 'LocalService') {
+    $newService.Credential = New-Object System.Management.Automation.PSCredential(
+        'NT AUTHORITY\LocalService', (New-Object System.Security.SecureString))
+}
+New-Service @newService | Out-Null
+
+# These sc.exe arguments contain no quotes, so they pass through intact.
+function Invoke-Sc {
+    & sc.exe @args | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc.exe $($args -join ' ') failed ($LASTEXITCODE)" }
+}
+Invoke-Sc failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/30000
 # Strip every privilege the service does not need.
-sc.exe privs $ServiceName 'SeDebugPrivilege/SeChangeNotifyPrivilege' | Out-Null
-sc.exe sidtype $ServiceName unrestricted | Out-Null
+Invoke-Sc privs $ServiceName SeDebugPrivilege/SeChangeNotifyPrivilege
+Invoke-Sc sidtype $ServiceName unrestricted
 Write-Host "Service '$ServiceName' created (auto start, account $obj)."
 
 if (-not $NoStart) {
