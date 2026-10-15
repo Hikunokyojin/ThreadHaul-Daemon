@@ -17,8 +17,6 @@ Team / module owners: Divik (Actuator), Prakul (Telemetry), Pranav (Config / Log
 | Document | Read it to |
 |---|---|
 | [RUNNING.md](RUNNING.md) | Build, install, demonstrate and remove the service, step by step (start here if you are new) |
-| [Source/Docs/ModuleGuides/](Source/Docs/ModuleGuides/) | Understand one module in depth: one PDF per team member covering its files, Windows APIs, functions and review questions. Regenerate them with `python Source\Docs\module_guides.py`. |
-| [Source/Docs/literature-review.md](Source/Docs/literature-review.md) | See the research behind the design decisions |
 | [INTERFACES.md](INTERFACES.md) | Look up the event struct, log schema and config schema shared between modules |
 
 ---
@@ -39,7 +37,6 @@ Source/
   Simulators/                 critical_simulator and batch_simulator test apps
   Scripts/                    install.ps1, uninstall.ps1, log_viewer.py
   Tests/                      unit tests (state machine, telemetry, config/logging)
-  Docs/literature-review.md   formal literature review and research gaps
 third_party/nlohmann/json.hpp
 ```
 
@@ -219,7 +216,7 @@ When a batch process is suspended, the daemon:
 
 ## Design rationale
 
-The full reasoning is in [Source/Docs/literature-review.md](Source/Docs/literature-review.md), which reviews 10 papers from 2023–2026 (ACM, IEEE, Elsevier, Springer, MDPI, Nature). In short:
+The design follows a literature review of 10 papers from 2023–2026 (ACM, IEEE, Elsevier, Springer, MDPI, Nature). The review is kept with the team's project documentation, not in this repository. In short:
 
 - **Predictive thresholds instead of static ones:** 2023–2026 work (e.g. DeepScaling, IEEE/ACM ToN 2024) shows fixed CPU targets react too late. ThreadHaul fits a trend to recent load and lowers its thresholds while load is climbing, so batch work is shed before the critical process starves. The recovery threshold never moves, so it can't cause oscillation.
 - **A lightweight predictor:** published predictors are deep models running on cluster control planes. A monitor on the server it protects must not add load, so ThreadHaul uses a closed-form linear fit. Self-monitoring shows about 1% of one core and about 8 MB.
