@@ -1,250 +1,493 @@
 # ThreadHaul-Daemon
 
-A Windows service that stops batch jobs from starving the real-time processes on a logistics dispatch server.
+**Keep latency-critical Windows workloads responsive by automatically throttling and pausing background batch jobs when CPU runs short.**
 
-It watches one or more **critical** processes (driver tracking, route-dispatch APIs) and one or more **batch** processes (invoicing, inventory sync, archiving). When a critical process is starved, it handles each batch process independently:
-
-1. **Throttle.** After 3 consecutive samples at or above 85%, the batch process is demoted to `IDLE_PRIORITY_CLASS`.
-2. **Escalate.** If the critical process stays at or above 90% for 5 more samples, every thread of the batch process is suspended.
-3. **Recover.** After 5 consecutive samples below 60%, threads are resumed and normal priority is restored.
-
-Every threshold, process name and interval comes from `config.json` and can be changed while the service is running.
-
-Team / module owners: Divik (Actuator), Prakul (Telemetry), Pranav (Config / Logging / Integration). Cross-module contracts are in [INTERFACES.md](INTERFACES.md). The specification is [specs/logistics-resource-monitor.md](specs/logistics-resource-monitor.md).
-
-**Documentation:**
-
-| Document | Read it to |
-|---|---|
-| [RUNNING.md](RUNNING.md) | Build, install, demonstrate and remove the service, step by step (start here if you are new) |
-| [INTERFACES.md](INTERFACES.md) | Look up the event struct, log schema and config schema shared between modules |
+ThreadHaul-Daemon is a lightweight Windows Service, written in C++17 against the standard Win32 API. It watches the processes you mark as *critical*. When they are starved of CPU, it steps in against the processes you mark as *batch*: first it lowers their priority, then, if that isn't enough, it suspends them. Once load returns to normal, it restores them automatically. Every decision is recorded in a structured log and in the Windows Event Log.
 
 ---
 
-## Repository layout
+## Contents
 
-```
-build.cmd                     build everything into build\ ("build.cmd test" also runs the tests)
-INTERFACES.md                 cross-layer contract: event struct, log schema, config schema
-Source/
-  main.cpp                    service entry point, console mode, CLI manual override
-  Actuator/                   state machine, SetPriorityClass, Suspend/ResumeThread, protection list
-  Telemetry/                  process discovery, CPU%/memory/I-O sampling, adaptive thresholds
-  Config/                     config.json loading + validation, sample config.json
-  Logging/                    JSON Lines logger with rotation, Windows Event Log writer
-  Daemon/                     integration loop, hot reload, control pipe, alerts, coordination client
-  Controller/                 ThreadHaulController (central coordinator for many servers)
-  Simulators/                 critical_simulator and batch_simulator test apps
-  Scripts/                    install.ps1, uninstall.ps1, log_viewer.py
-  Tests/                      unit tests (state machine, telemetry, config/logging)
-third_party/nlohmann/json.hpp
-```
+- [The problem](#the-problem)
+- [How it solves it](#how-it-solves-it)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Building from source](#building-from-source)
+- [Installing as a Windows Service](#installing-as-a-windows-service)
+- [Using the service](#using-the-service)
+- [Configuration](#configuration)
+- [Logs and monitoring](#logs-and-monitoring)
+- [Multi-server deployments](#multi-server-deployments)
+- [Security model](#security-model)
+- [Troubleshooting](#troubleshooting)
+- [Project layout](#project-layout)
+- [Running the tests](#running-the-tests)
+- [Known limitations](#known-limitations)
+- [Contributing](#contributing)
 
-## Build
+---
 
-Requirements: Windows 10/11 or Server 2016+, Visual Studio 2019 or later with "Desktop development with C++". For the log viewer: Python 3 and `pip install matplotlib`.
+## The problem
 
-```bat
-build.cmd
-```
+Servers rarely run one thing. A dispatch or order-routing server, for example, often runs a real-time API that drivers and customers depend on next to batch work: invoice generation, inventory synchronisation, report building, archiving.
 
-`build.cmd` finds Visual Studio on its own (it works from a plain prompt) and writes these to `build\`:
+Most of the time this is fine. During peak load, though, the batch work competes for the same CPU cores. The Windows scheduler treats both kinds of work as equally important unless told otherwise, so the latency-critical service slows down at exactly the moment it matters most. The usual workarounds all have drawbacks:
 
-| Output | What it is |
+| Workaround | Drawback |
 |---|---|
-| `ThreadHaulDaemon.exe` | the monitor (service, console mode, CLI) |
-| `ThreadHaulController.exe` | central coordinator for multi-server setups |
-| `critical_simulator.exe`, `batch_simulator.exe` | dummy test apps |
-| `StateMachineTests.exe`, `TelemetryTests.exe`, `ConfigLoggingTests.exe` | unit tests |
-| `config.json` | copy of the sample config |
+| Schedule batch jobs off-peak | Peaks are not always predictable, and some batch work cannot wait until night |
+| Permanently lower batch priority | Batch jobs run slowly even when the server is idle |
+| Run batch work on separate machines | Extra hardware and operational cost |
+| Kill batch jobs by hand during incidents | Slow, error-prone, and loses work in progress |
 
-The Visual Studio project `Source/Actuator/ActuatorModule.vcxproj` builds the same daemon (Debug or Release, x64).
+## How it solves it
 
-## Run the unit tests
+ThreadHaul-Daemon makes the decision continuously and automatically, based on what the critical workload is actually experiencing:
 
-```bat
-build.cmd test
+1. **Measure.** Once per second, it samples the CPU usage of each critical process. Memory and I/O pressure can optionally be included.
+2. **Throttle.** If a critical process stays at or above 85% for 3 consecutive seconds, each batch process is demoted to *Idle* priority. Batch jobs then only run on CPU time that nothing else needs.
+3. **Suspend.** If the critical process is still at or above 90% for 5 more seconds, every thread of each batch process is suspended. The work is paused, not lost.
+4. **Recover.** Once the critical process stays below 60% for 5 consecutive seconds, batch processes are resumed and returned to normal priority.
+
+Batch work runs at full speed whenever the server has capacity, and steps aside the moment it doesn't. All thresholds, durations and process names are configurable and can be changed without restarting the service.
+
+## Features
+
+**Core control**
+- Graded response: priority demotion first, thread suspension only when needed, automatic recovery after that.
+- Each batch process has its own state machine, so one job can be suspended while another is only throttled.
+- Multiple critical and multiple batch processes, matched by executable name (case-insensitive), including multiple instances of the same name.
+- Optional **predictive thresholds**: when load is rising quickly, the thresholds are lowered temporarily so batch work is shed *before* the critical process is starved.
+- Optional **memory and I/O triggers** alongside CPU.
+
+**Operations**
+- Runs as a native Windows Service: automatic start, restart on failure, clean shutdown.
+- **Live configuration reload.** Edits to `config.json` apply within one poll interval. Invalid edits are rejected, and the service keeps running on the last valid configuration.
+- **Manual override CLI.** Throttle, suspend, resume or release any batch process on demand, and query live status.
+- **Structured JSON Lines log** with size-based rotation, plus **Windows Event Log** entries.
+- **Alerts** when a process is suspended: a desktop pop-up and/or an HTTP webhook (Teams, Slack, or an email relay).
+- **Self-monitoring.** The service logs its own CPU and memory use, typically about 1% of one core and under 10 MB.
+- Optional **central controller** for fleets of servers, with cluster-wide coordination.
+
+**Safety**
+- A protection list that can never be throttled or suspended. Core Windows processes and the service itself are always protected.
+- Handles targets that aren't running yet, that crash, or that restart under a new process ID.
+- Guards against process-ID reuse, and against a process exiting while it is suspended.
+- Least-privilege service account, a tamper-protected configuration file, and an administrator-only control channel.
+- Stopping the service always restores every process it has touched.
+
+## How it works
+
+```
+                 every poll interval (default 1 s)
+ +----------------------+   pressure %   +------------------------+   Win32 calls   +-----------------+
+ |      Telemetry       | -------------> |        Actuator        | --------------> |  batch process  |
+ | find critical procs, |                | one state machine per  |  SetPriority-   |  (e.g. invoice  |
+ | sample CPU/mem/I-O   |                | batch process          |  Class, Suspend-|   generation)   |
+ +----------------------+                +------------------------+  /ResumeThread  +-----------------+
+            |                                        | every state change
+            v                                        v
+ +-----------------------------------------------------------------------------------------------+
+ |  Service core: configuration + live reload, JSON Lines log, Event Log, alerts,                 |
+ |  control pipe (CLI), optional controller connection                                           |
+ +-----------------------------------------------------------------------------------------------+
 ```
 
-There are 189 checks across three suites:
-- **CPU% from kernel+user ticks:** both normalisations, clamping, zero wall time.
-- **Threshold state machine:** 3/5/5 consecutive-sample rules, boundaries, escalation and recovery, manual holds, live config changes.
-- **Adaptive thresholds:** slope, forecast, cap, hysteresis, controller bias.
-- **Process tracking:** a missing process, then a crash detected with its exit code.
-- **Config validation** and the JSON Lines log schema and rotation.
+**Telemetry.** Finds processes by executable name with a Toolhelp snapshot. CPU usage is derived from `GetProcessTimes` (kernel + user time) between two samples. Memory comes from `GetProcessMemoryInfo`, and I/O from `GetProcessIoCounters`.
 
-## Demo with the dummy apps (console mode)
+CPU is normalised **per core** by default: 100% means one fully used logical core, so a threshold means the same thing on a 4-core and a 64-core machine. Whole-system normalisation is available as an option.
 
-Run each command in its own terminal, from `build\`. Run the first one elevated if you want to manage other users' processes; for these demo apps it isn't needed.
+**Actuator.** Each batch process moves through three states:
 
-```bat
-ThreadHaulDaemon.exe --console --config config.json --allow-unelevated
-batch_simulator.exe --threads 2
-critical_simulator.exe
+```
+            >= high% for N samples                >= critical% for M samples
+  NORMAL  ------------------------->  THROTTLED  ---------------------------->  SUSPENDED
+    ^        (SetPriorityClass IDLE)      |          (SuspendThread on all threads)    |
+    |                                     |  < low% for K samples                      |
+    +-------------------------------------+--------------------------------------------+
+                         (ResumeThread + SetPriorityClass NORMAL)
 ```
 
-The critical simulator's default schedule repeats this cycle:
-- 8 s at 30%;
-- 20 s at 100%, long enough to throttle (3 s) and then suspend (5 more s);
-- 15 s at 20%, long enough to recover (5 s).
+Escalation counts samples *after* throttling, so suspension only happens when demotion has demonstrably not been enough. Recovery uses a lower threshold than throttling. That gap (hysteresis) stops a process from flapping between states.
 
-Watch the batch simulator's console:
-- its priority switches to `IDLE`;
-- its output stops while it is suspended;
-- it prints `<- resumed after a pause` when it is resumed.
+**Predictive thresholds (optional).** A least-squares trend is fitted over the last few pressure samples. If load is rising and is forecast to cross the throttle threshold, the throttle and suspend thresholds are lowered by the forecast rise, up to a configurable cap. The recovery threshold never moves, so prediction can't cause oscillation. The calculation is a handful of arithmetic operations per second, so the cost is negligible.
 
-To force a crash or a restart:
-- `critical_simulator.exe --load 100 --crash-after 10` exits with code 3 after 10 s. Start it again and the daemon logs `restarted` with the new PID.
+## Requirements
 
-Then graph the run:
+| Requirement | Notes |
+|---|---|
+| Windows 10, Windows 11, or Windows Server 2016 or later (x64) | |
+| Administrator rights | To install the service, and to manage processes owned by other accounts |
+| Visual Studio 2019 or later with the **Desktop development with C++** workload | Build only. The free Community edition is sufficient. |
+| Python 3 with `matplotlib` | Optional, only for the log-graphing script |
 
-```bat
-python ..\Source\Scripts\log_viewer.py <log_path from config.json> --out run.png
-```
+There are no other dependencies. The JSON library ([nlohmann/json](https://github.com/nlohmann/json)) is bundled in `third_party/`.
 
-The viewer prints every state change and the daemon's own CPU/memory footprint, then draws three graphs:
-- critical-process CPU against the (adaptive) thresholds;
-- the state timeline of each batch process;
-- the daemon's own resource use.
+## Quick start
 
-## Install as a Windows Service
-
-From an **elevated** PowerShell, after `build.cmd`:
+These commands go from a fresh clone to a running service. Use an **Administrator PowerShell** opened in the repository folder.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File Source\Scripts\install.ps1
+.\build.cmd                                                        # 1. compile
+powershell -ExecutionPolicy Bypass -File .\Source\Scripts\install.ps1   # 2. install and start the service
+& "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" status   # 3. confirm it responds
+```
+
+To see it in action, start the bundled test programs in two other PowerShell windows (from the repository folder):
+
+```powershell
+.\build\batch_simulator.exe --threads 2     # window 2: a CPU-hungry "batch job"
+.\build\critical_simulator.exe              # window 3: a "critical service" that periodically hits 100%
+```
+
+Within a few seconds of each full-load phase, the batch window's output changes:
+- it shows `priority IDLE` (throttled);
+- then it stops printing (suspended);
+- then it reports `resumed after a pause` (recovered).
+
+For a detailed walkthrough with expected output at every step, see **[RUNNING.md](RUNNING.md)**.
+
+## Building from source
+
+```powershell
+.\build.cmd          # build everything into .\build
+.\build.cmd test     # build, then run the unit tests
+```
+
+`build.cmd` locates Visual Studio automatically via `vswhere`, so it works from any prompt. It produces:
+
+| Output | Purpose |
+|---|---|
+| `ThreadHaulDaemon.exe` | The service, console mode and command-line tool |
+| `ThreadHaulController.exe` | Optional central controller for multiple servers |
+| `critical_simulator.exe`, `batch_simulator.exe` | Test workloads for demonstrations and validation |
+| `StateMachineTests.exe`, `TelemetryTests.exe`, `ConfigLoggingTests.exe` | Unit tests |
+| `config.json` | A copy of the sample configuration |
+
+The compiler output is written to `build\build.log`. A Visual Studio project is also provided at `Source/Actuator/ActuatorModule.vcxproj` (Debug/Release, x64).
+
+## Installing as a Windows Service
+
+From an **Administrator PowerShell** in the repository folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Source\Scripts\install.ps1
 ```
 
 The installer:
-- validates `config.json` with the binary before installing anything;
-- copies the binary to `%ProgramFiles%\ThreadHaulDaemon`;
-- installs the config to `%ProgramData%\ThreadHaulDaemon\config.json`;
-- locks the config down (see Security below);
-- registers the `ThreadHaulDaemon` Application event-log source;
-- creates the service: auto-start, restart on failure, only the privileges it needs;
-- starts the service.
 
-Useful flags:
-- `-Account LocalService`
-- `-OverwriteConfig`
-- `-NoStart`
+1. Validates the configuration file and stops if it is invalid.
+2. Replaces any previous installation. The old service is stopped cleanly, which restores any processes it was managing.
+3. Copies the program to `C:\Program Files\ThreadHaulDaemon\`.
+4. Installs the configuration to `C:\ProgramData\ThreadHaulDaemon\config.json`. An existing configuration is kept unless you pass `-OverwriteConfig`.
+5. Restricts the configuration file so only SYSTEM and Administrators can change it.
+6. Registers the `ThreadHaulDaemon` source in the Windows Application event log.
+7. Creates the service: automatic start, restart on failure, and only the privileges it needs.
+8. Starts the service.
 
-Uninstall with `Source\Scripts\uninstall.ps1`. Add `-RemoveData` to also delete the config and logs. Stopping the service always resumes suspended threads and restores priorities first.
+| Option | Effect |
+|---|---|
+| `-OverwriteConfig` | Replace an existing installed `config.json` with the one from the repository |
+| `-Account LocalService` | Run under the lower-privilege LocalService account. It can then only manage processes that also run as LocalService. |
+| `-NoStart` | Install without starting |
+| `-BinDir <path>` / `-ConfigSource <path>` | Install from a different build folder or configuration file |
 
-Logs go to:
-- `%ProgramData%\ThreadHaulDaemon\logs\threadhaul.jsonl`;
-- Windows Event Viewer → Windows Logs → Application, source `ThreadHaulDaemon`. Event IDs: 1000 throttled, 1001 suspended, 1002 recovered, 1900 startup error.
+**Service management**
 
-## CLI manual override
-
-These commands talk to the running daemon (service or console) over a local named pipe that only Administrators, SYSTEM and the daemon's own account can open:
-
-```bat
-ThreadHaulDaemon.exe throttle <pid|name>   demote to IDLE priority and hold it there
-ThreadHaulDaemon.exe suspend  <pid|name>   suspend every thread and hold
-ThreadHaulDaemon.exe resume   <pid|name>   resume + normal priority and hold
-ThreadHaulDaemon.exe release  <pid|name>   hand the process back to automatic control
-ThreadHaulDaemon.exe status                pressure, effective thresholds, every batch state
-ThreadHaulDaemon.exe stop                  stop a console-mode daemon cleanly
-ThreadHaulDaemon.exe validate-config [path]
+```powershell
+Get-Service ThreadHaulDaemon        # check state
+Stop-Service ThreadHaulDaemon       # stops after restoring every managed process
+Start-Service ThreadHaulDaemon
+Restart-Service ThreadHaulDaemon
 ```
 
-How these behave:
-- A forced state is held until `release`, so the state machine never fights the operator.
-- Protected processes and configured critical processes are always refused.
-- With no daemon running, `throttle`, `suspend` and `resume` act on the process directly, as a debugging fallback.
+**Uninstalling**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Source\Scripts\uninstall.ps1              # keep configuration and logs
+powershell -ExecutionPolicy Bypass -File .\Source\Scripts\uninstall.ps1 -RemoveData  # remove everything
+```
+
+### Running without installing
+
+For evaluation, or on machines where you cannot install a service, the same engine runs in the foreground:
+
+```powershell
+.\build\ThreadHaulDaemon.exe --console --config .\build\config.json
+```
+
+Add `--allow-unelevated` to run without administrator rights. In that mode it can only manage processes started by your own user account. Press **Ctrl+C**, or run `ThreadHaulDaemon.exe stop`, to stop. Stopping always restores managed processes.
+
+> The sample configuration logs to `C:\ProgramData\...`, which a standard user can't write to. When running unelevated, set `logging.log_path` to a writable location, such as `"threadhaul.jsonl"`.
+
+## Using the service
+
+The executable doubles as a command-line tool that talks to the running service (or console instance) over a local, administrator-only named pipe.
+
+```powershell
+$thd = "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe"
+
+& $thd status                          # current pressure, effective thresholds, every managed process
+& $thd throttle invoice_batch.exe      # demote to Idle priority, and hold
+& $thd suspend  invoice_batch.exe      # suspend all threads, and hold
+& $thd resume   invoice_batch.exe      # resume at normal priority, and hold
+& $thd release  invoice_batch.exe      # return to automatic control
+& $thd validate-config C:\ProgramData\ThreadHaulDaemon\config.json
+& $thd help
+```
+
+- Targets can be an executable name (all instances) or a process ID.
+- Manual actions are **held** until `release`, so the automatic logic never fights an operator decision.
+- Processes on the protection list, and processes configured as critical, are always refused.
+- If no service is running, `throttle`, `suspend` and `resume` act on the process directly. This is useful for testing.
+
+`status` returns a single JSON object, which makes it easy to use from scripts or monitoring agents:
+
+```json
+{"ok":true,"pressure_percent":97.3,"pressure_signal":"cpu","critical_process_id":4821,
+ "offset_percent":0.0,"thresholds":{"high":85.0,"critical":90.0,"low":60.0},
+ "coordination_connected":false,
+ "critical":[{"name":"dispatch_api.exe","pid":4821,"cpu_percent":97.3}],
+ "batch":[{"name":"invoice_batch.exe","pid":5190,"state":"throttled","manual_hold":false}]}
+```
 
 ## Configuration
 
-See [`Source/Config/config.json`](Source/Config/config.json). The full schema and validation rules are in [INTERFACES.md §4](INTERFACES.md).
+The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`. Edit it from an elevated editor, for example `notepad C:\ProgramData\ThreadHaulDaemon\config.json` in an Administrator PowerShell. Changes apply within one poll interval; no restart is needed.
 
-**Required sections:**
-- `polling`
-- `thresholds` (`high`, `critical`, `low`, each with `percent` and `consecutive_samples`)
-- `processes` (`critical`, `batch`, optional `protected`)
-- `logging` (path, rotation size, rotated-file count)
+### Minimal configuration
 
-**Optional sections:**
-- `telemetry`: CPU normalisation, self-monitor interval.
-- `triggers`: memory and I/O signals.
-- `adaptive`: predictive thresholds.
-- `alerts`: popup and webhook.
-- `coordination`: controller.
-- `security`: refuse a config that non-administrators can modify.
-
-Invalid config stops startup with a message that names the field, for example `thresholds.low.percent must be below thresholds.high.percent`. While the daemon is running, edits to the file are applied on the next poll. An invalid edit is rejected and logged, and the last good config stays in force.
-
-**CPU normalisation:** with the default `per_core`, 100% means one fully used logical core, so one busy thread reads about 100% on any machine. Set `"cpu_normalization": "total"` to make 100% mean the whole machine.
-
-## Multi-server coordination
-
-On a central machine:
-
-```bat
-ThreadHaulController.exe --port 7878 --token <secret> --pressure 85 --cluster-percent 50 --bias 5
+```json
+{
+  "polling":    { "interval_ms": 1000 },
+  "thresholds": {
+    "high":     { "percent": 85, "consecutive_samples": 3 },
+    "critical": { "percent": 90, "consecutive_samples": 5 },
+    "low":      { "percent": 60, "consecutive_samples": 5 }
+  },
+  "processes": {
+    "critical":  ["dispatch_api.exe"],
+    "batch":     ["invoice_batch.exe", "inventory_sync.exe"],
+    "protected": ["explorer.exe"]
+  },
+  "logging": {
+    "log_path": "C:\\ProgramData\\ThreadHaulDaemon\\logs\\threadhaul.jsonl",
+    "max_file_size_mb": 50,
+    "max_rotated_files": 5
+  }
+}
 ```
 
-On each dispatch server, set `"coordination": { "enabled": true, "controller_host": "<host>", "shared_token": "<secret>" }`.
+### Reference
 
-Each daemon:
-- connects to the controller, reconnecting with back-off;
-- sends a heartbeat every few seconds;
-- forwards every throttle, suspend and resume event.
+| Setting | Description | Default / range |
+|---|---|---|
+| `polling.interval_ms` | Time between samples | 1000 (100–60000) |
+| `thresholds.high` | Throttle when pressure ≥ `percent` for `consecutive_samples` | 85%, 3 |
+| `thresholds.critical` | Suspend when pressure ≥ `percent` for `consecutive_samples` after throttling | 90%, 5 |
+| `thresholds.low` | Recover when pressure < `percent` for `consecutive_samples` | 60%, 5 |
+| `processes.critical` | Executable names to protect (at least one) | |
+| `processes.batch` | Executable names that may be throttled or suspended (at least one) | |
+| `processes.protected` | Executable names that must never be touched | optional |
+| `logging.log_path` | JSON Lines log file | |
+| `logging.max_file_size_mb` / `max_rotated_files` | Rotation policy | 50 MB, 5 files |
+| `telemetry.cpu_normalization` | `per_core` (100% = one core) or `total` (100% = whole machine) | `per_core` |
+| `telemetry.log_samples` | Write a log line for every sample | `true` |
+| `telemetry.self_monitor_interval_seconds` | How often the service logs its own footprint (0 = off) | 30 |
+| `triggers.memory.enabled` | Include memory pressure | `false` |
+| `triggers.memory.system_load_limit_percent` | System memory load treated as 100% pressure | 95 |
+| `triggers.memory.critical_working_set_limit_mb` | Critical-process working set treated as 100% (0 = off) | 0 |
+| `triggers.io.enabled` / `critical_io_limit_mb_per_sec` | Include I/O throughput of the critical process | `false`, 200 |
+| `adaptive.enabled` | Predictive thresholds | `false` |
+| `adaptive.window_samples` / `horizon_samples` / `max_adjust_percent` | Trend window, forecast distance, maximum lowering | 10, 3, 10 |
+| `alerts.popup` | Desktop pop-up when a process is suspended | `true` |
+| `alerts.webhook_url` | HTTP(S) endpoint that receives a JSON POST on suspension | empty |
+| `coordination.*` | Central controller connection (see below) | disabled |
+| `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
 
-The controller:
-- logs everything to `controller.jsonl`;
-- when at least half the servers are above 85%, tells all of them to lower their throttle thresholds by 5 points, and clears that when load drops;
-- accepts operator commands such as `list`, `DISPATCH-01 suspend invoice_batch.exe` or `all release invoice_batch.exe`.
+**Validation rules:**
+- Every required field must be present and within range.
+- `low` must be below `high`, and `high` must not exceed `critical`.
+- A name can't be both critical and batch.
+- Names must be executable names, not paths.
 
-## Alerts
+An invalid file stops the service at startup, with a message naming the field (also written to the Event Log). The same file edited while the service is running is rejected, and the previous configuration stays active.
 
-When a batch process is suspended, the daemon:
-- shows a message box in the active console session (`alerts.popup`). This works from a Session 0 service, where toast notifications don't;
-- POSTs a JSON body to `alerts.webhook_url`, if one is set. Point it at Teams or Slack, or at an email relay for email alerts.
+**Memory and I/O triggers** are each expressed as a percentage of their configured limit. They go through the same thresholds as CPU, and the highest signal wins. For example, with `system_load_limit_percent` set to 95, a system memory load of 81% counts as 85% pressure.
 
-## Security and privileges
+## Logs and monitoring
 
-- **Least privilege:**
-  - The service is created with only `SeDebugPrivilege` (needed to open other accounts' processes) and `SeChangeNotifyPrivilege`; every other LocalSystem privilege is removed (`sc privs`).
-  - `-Account LocalService` runs it with even fewer rights, but then it can only manage processes that also run as LocalService.
-- **Config tamper protection:**
-  - The installer removes inherited permissions from `config.json`: SYSTEM and Administrators get full control, the service account gets read access, and other users get nothing.
-  - On every load the daemon checks that Everyone, Users, Authenticated Users and Interactive cannot write the file, and logs a warning if they can. With `security.require_protected_config: true` it refuses to load such a file instead.
-  - Every load records the file's SHA-256 in the log, so any change is visible.
-- **Protection list:** `processes.protected` plus a built-in list (`System`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe`, `lsass.exe`, `smss.exe`, `Registry`, and the daemon itself) can never be throttled or suspended.
-- **Access denied:** when a target can't be opened (protected or elevated), this is logged (`access_denied` lifecycle event, or `actuation_succeeded: false`) and the daemon carries on.
+### JSON Lines log
 
-## Design rationale
+Each line of the log file is one complete JSON object, written in this form: `log_type`, then `timestamp` (ISO 8601 UTC, milliseconds), then snake_case fields. The file rotates by size.
 
-The design follows a literature review of 10 papers from 2023–2026 (ACM, IEEE, Elsevier, Springer, MDPI, Nature). The review is kept with the team's project documentation, not in this repository. In short:
+```json
+{"log_type":"actuator_action","timestamp":"2026-10-15T07:27:41.749Z","batch_process_id":5190,"batch_process_name":"invoice_batch.exe","critical_process_id":4821,"action":"threads_suspended","from_state":"throttled","to_state":"suspended","cpu_percent":100.0,"actuation_succeeded":true,"trigger":"automatic"}
+```
 
-- **Predictive thresholds instead of static ones:** 2023–2026 work (e.g. DeepScaling, IEEE/ACM ToN 2024) shows fixed CPU targets react too late. ThreadHaul fits a trend to recent load and lowers its thresholds while load is climbing, so batch work is shed before the critical process starves. The recovery threshold never moves, so it can't cause oscillation.
-- **A lightweight predictor:** published predictors are deep models running on cluster control planes. A monitor on the server it protects must not add load, so ThreadHaul uses a closed-form linear fit. Self-monitoring shows about 1% of one core and about 8 MB.
-- **Memory and I/O triggers:** colocation research (e.g. SODA, IEEE TC 2023) shows interference goes beyond CPU share. Memory and I/O are scaled against configured limits and share the same thresholds.
-- **Graded, per-process escalation:** fine-grained core scheduling (Vessel, SOSP 2024) needs special hardware. With only OS priority classes, ThreadHaul escalates step by step (priority, then suspension) and independently for each batch process.
-- **Cluster coordination:** scheduling research is moving to multi-node decisions (IEEE COMST 2024). The controller's cluster bias lets cooler servers shed load early during fleet-wide peaks.
+| `log_type` | Written when |
+|---|---|
+| `actuator_action` | A batch process changes state. `trigger` is `automatic`, `manual`, `shutdown` or `config_reload`. |
+| `sample` | Every poll, per critical process: CPU, memory, I/O and combined pressure |
+| `threshold_event` | A threshold streak completes |
+| `process_lifecycle` | A target appears, exits, crashes (with its exit code), restarts under a new ID, or is refused |
+| `config_reload` / `config_security` | The configuration changed or was rejected, or the configuration file's permissions are too open |
+| `adaptive_threshold` | Predictive thresholds moved |
+| `manual_override` | A CLI or controller command was executed |
+| `alert` | A suspension alert was sent |
+| `self_monitor` | Periodically: the service's own CPU, memory and handle count |
+| `service_lifecycle` | The service started or stopped. The start entry includes the configuration file's SHA-256. |
 
-## Verification status
+Follow it live:
 
-**As an installed Windows Service** (Administrator, Windows 11):
-- `install.ps1` validated the config, installed the program and config, locked the config down, registered the event source, and created and started the service (Automatic start, LocalSystem).
-- The service answered `status` over the control pipe.
-- The test programs produced the full throttle → suspend → recover cycle, with Event Log entries and the suspension pop-up.
+```powershell
+Get-Content C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl -Tail 20 -Wait
+```
 
-**In console mode** (non-elevated session, Windows 11, 16 logical cores):
-- All 189 unit-test checks pass.
-- Both build paths compile with no compiler warnings.
-- The full console-mode scenario ran:
-  - automatic throttle, then suspend, then recover;
-  - CLI overrides, and refusal of a protected process;
-  - controller commands and the cluster bias;
-  - hot reload, and rejection of an invalid edit;
-  - a critical-process crash with exit code 3, and a restart under a new PID;
-  - a clean stop that resumes held processes;
-  - adaptive throttling ahead of the static threshold.
+### Graphs
 
-**Not yet verified:**
-- `uninstall.ps1` passes a PowerShell syntax check but hasn't been confirmed end to end.
-- The installer's `-Account LocalService` option hasn't been tried.
+```powershell
+python -m pip install matplotlib
+python .\Source\Scripts\log_viewer.py C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl --out activity.png
+```
 
-On machines with Smart App Control turned on, freshly built unsigned executables may occasionally be blocked ("An Application Control policy has blocked this file"). Re-running usually works, or the binaries can be code-signed.
+This prints a table of every state change and the service's resource footprint, then renders three charts:
+- critical-process load against the (possibly adaptive) thresholds;
+- each batch process's state over time;
+- the service's own CPU and memory use.
+
+### Windows Event Log
+
+Source **ThreadHaulDaemon** in the *Application* log:
+
+| Event ID | Meaning |
+|---|---|
+| 1000 | Batch process throttled |
+| 1001 | Batch process suspended (warning) |
+| 1002 | Batch process recovered |
+| 1900 | Service failed to start. The message gives the reason. |
+
+```powershell
+Get-EventLog -LogName Application -Source ThreadHaulDaemon -Newest 10
+```
+
+## Multi-server deployments
+
+For fleets of servers, an optional controller collects state from every node and coordinates them.
+
+**On the controller host:**
+
+```powershell
+.\build\ThreadHaulController.exe --port 7878 --token <shared-secret> --pressure 85 --cluster-percent 50 --bias 5
+```
+
+**On each server**, in `config.json`:
+
+```json
+"coordination": {
+  "enabled": true,
+  "controller_host": "controller.example.internal",
+  "controller_port": 7878,
+  "shared_token": "<shared-secret>",
+  "heartbeat_seconds": 5
+}
+```
+
+Each service connects with the shared token, then:
+- sends a heartbeat (pressure, thresholds, batch states) every few seconds;
+- forwards every state change.
+
+It reconnects automatically if the controller is unavailable, and keeps protecting its own server in the meantime.
+
+When at least `--cluster-percent` of servers are above `--pressure`, the controller sends every server a **bias** that lowers their throttle thresholds by `--bias` points. Servers that are not yet starved then start shedding batch load early, which reduces pressure across the fleet. The bias is cleared when the cluster calms down.
+
+Operators can type commands at the controller console:
+
+```
+list                                     every connected server and its batch processes
+web-01 suspend invoice_batch.exe         act on one server
+all release invoice_batch.exe            act on every server
+quit
+```
+
+The controller writes its own JSON Lines log (`controller.jsonl` by default). Allow the chosen TCP port through the controller host's firewall.
+
+## Security model
+
+- **Least privilege.**
+  - The service is installed with every privilege removed except `SeDebugPrivilege`, needed to open processes owned by other accounts, and `SeChangeNotifyPrivilege`.
+  - The installer's `-Account LocalService` option runs it under a lower-privilege account where that is sufficient.
+- **Protected configuration.**
+  - The installer removes inherited permissions from `config.json`: SYSTEM and Administrators can modify it, the service account can read it, and other users have no access.
+  - At every load the service checks that Everyone, Users, Authenticated Users and Interactive cannot write the file, and logs a warning if they can. With `security.require_protected_config` set to `true` it refuses to load such a file instead.
+  - The file's SHA-256 is logged at start-up and on every reload.
+- **Administrator-only control channel.** The CLI uses a local named pipe (`\\.\pipe\ThreadHaulDaemon`). Its access list admits only SYSTEM, Administrators and the service's own account, and remote clients are rejected.
+- **Controller authentication.** Nodes must present the shared token. Run the controller on a trusted network segment; the protocol does not encrypt traffic.
+- **Protection list.** The service itself, `System`, `Registry`, `smss.exe`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe` and `lsass.exe` are always protected, in addition to `processes.protected`.
+- **Graceful failure.** If a process can't be opened (access denied, or the process has exited), the outcome is logged with `actuation_succeeded: false` and the service carries on.
+
+## Troubleshooting
+
+| Symptom | Resolution |
+|---|---|
+| `... is not recognized` / `No such file or directory` | Run commands from the repository folder. Paths containing spaces must be quoted. |
+| `Run this script from an elevated (Administrator) PowerShell` | Open PowerShell with **Run as administrator**. |
+| `Visual Studio not found` | Install the *Desktop development with C++* workload. |
+| `daemon is not running` | Check `Get-Service ThreadHaulDaemon` and start it, or install it. |
+| `access denied: run this command as Administrator` | The control channel is administrator-only. |
+| The service stops right after starting | The configuration is invalid. Read Event ID 1900 for the field name and run `validate-config`. |
+| Batch processes are never throttled | Check that the names in `processes` match the executable names exactly, and look at `pressure_percent` in `status`. |
+| No pop-up on suspension | A user must be signed in at the console, and `alerts.popup` must be `true`. |
+| `An Application Control policy has blocked this file` | Windows Smart App Control can block newly compiled, unsigned binaries. Retry, or code-sign the build output. |
+
+## Project layout
+
+```
+build.cmd                  one-step build (+ "test")
+RUNNING.md                 step-by-step installation and operation guide
+INTERFACES.md              internal contract between modules (event struct, log and config schema)
+Source/
+  main.cpp                 service entry point, console mode, command-line interface
+  Actuator/                state machine, priority and thread control, protection list
+  Telemetry/               process discovery, CPU/memory/I-O sampling, predictive thresholds
+  Config/                  configuration loading and validation, sample config.json
+  Logging/                 JSON Lines logger with rotation, Windows Event Log writer
+  Daemon/                  service core: poll loop, live reload, control pipe, alerts, controller client
+  Controller/              ThreadHaulController
+  Simulators/              critical_simulator and batch_simulator test workloads
+  Scripts/                 install.ps1, uninstall.ps1, log_viewer.py
+  Tests/                   unit tests
+third_party/nlohmann/      bundled JSON library (MIT licence)
+```
+
+## Running the tests
+
+```powershell
+.\build.cmd test
+```
+
+Three suites run, and each must report `0 failed`:
+- **State machine:** throttle/suspend/recover rules, boundaries, manual holds, live configuration changes, the protection list.
+- **Telemetry:** CPU calculation in both normalisation modes, threshold streaks, predictive thresholds, real process discovery, and crash detection with exit codes.
+- **Configuration and logging:** validation of every field, optional sections, log schema, and rotation.
+
+For an end-to-end check, run the quick start above and confirm the throttle → suspend → recover cycle in the log or with `status`.
+
+## Known limitations
+
+- **Windows only.** The service is built on Win32 process and thread APIs and has no Linux or macOS equivalent.
+- **Thread suspension is a snapshot.** A thread created by a batch process in the instant after the snapshot isn't suspended in that pass. Resuming always takes a fresh snapshot, so nothing is left suspended.
+- **Priority classes are coarse.** On machines with many idle cores, a throttled batch process may show no visible slowdown, because there is enough CPU for everyone. That is the intended behaviour.
+- **Controller traffic is not encrypted.** Use it on a trusted network, or tunnel it.
+- **Unsigned binaries.** Builds are not code-signed. Environments with Smart App Control or WDAC may require signing.
+
+## Contributing
+
+Issues and pull requests are welcome. Before submitting:
+
+1. Run `.\build.cmd test` and make sure every suite reports `0 failed`, with no new compiler warnings.
+2. Follow the existing code style: C++17, the Win32 API, the `snake_case` JSON field names described in `INTERFACES.md`, and no new third-party dependencies without discussion.
+3. If you change a log field, configuration key or cross-module interface, update `INTERFACES.md` in the same pull request.
+4. Add or update unit tests for any behaviour you change.
