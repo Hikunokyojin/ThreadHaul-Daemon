@@ -12,3 +12,4 @@ build/
 *.jsonl
 Source/Docs/
 service_run.png
+specs/
