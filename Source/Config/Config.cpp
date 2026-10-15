@@ -206,12 +206,8 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
     cfg.criticalProcesses = NameList(Field(processes, "critical", "processes.critical"),
                                      "processes.critical");
     cfg.batchProcesses = NameList(Field(processes, "batch", "processes.batch"), "processes.batch");
-    if (cfg.criticalProcesses.empty()) {
-        throw ConfigError("processes.critical must list at least one process");
-    }
-    if (cfg.batchProcesses.empty()) {
-        throw ConfigError("processes.batch must list at least one process");
-    }
+    // Empty lists are allowed: the service then monitors nothing until
+    // processes are assigned (for example from the dashboard).
     const auto prot = processes.find("protected");
     if (prot != processes.end()) {
         cfg.protectedProcesses = NameList(*prot, "processes.protected");
@@ -305,7 +301,60 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
                                              "security.require_protected_config", false);
     }
 
+    if (const json* d = OptObject(root, "dashboard", "dashboard")) {
+        cfg.dashboardEnabled = OptBool(*d, "enabled", "dashboard.enabled", true);
+        cfg.dashboardPort = OptInteger(*d, "port", "dashboard.port", 1024, 65535, 8787);
+    }
+
     return cfg;
+}
+
+std::string SetProcessRole(const std::string& jsonText, const std::string& processName,
+                           const std::string& role) {
+    using ordered = nlohmann::ordered_json;
+    if (role != "critical" && role != "batch" && role != "protected" && role != "none") {
+        throw ConfigError("role must be critical, batch, protected or none");
+    }
+    if (processName.empty() || processName.find_first_of("\\/") != std::string::npos) {
+        throw ConfigError("process name must be an executable name such as \"app.exe\"");
+    }
+    ordered root;
+    try {
+        root = ordered::parse(jsonText);
+    } catch (const ordered::parse_error& e) {
+        throw ConfigError(std::string("config is not valid JSON: ") + e.what());
+    }
+    if (!root.is_object() || !root.contains("processes") || !root["processes"].is_object()) {
+        throw ConfigError("config has no processes object");
+    }
+    ordered& processes = root["processes"];
+    const std::wstring wanted = Utf8ToWide(processName);
+    for (const char* list : {"critical", "batch", "protected"}) {
+        if (!processes.contains(list)) {
+            continue;
+        }
+        ordered& names = processes[list];
+        if (!names.is_array()) {
+            throw ConfigError(std::string("processes.") + list + " must be an array");
+        }
+        ordered kept = ordered::array();
+        for (const auto& n : names) {
+            if (!(n.is_string() && SameName(Utf8ToWide(n.get<std::string>()), wanted))) {
+                kept.push_back(n);
+            }
+        }
+        names = kept;
+    }
+    if (role != "none") {
+        if (!processes.contains(role)) {
+            processes[role] = ordered::array();
+        }
+        processes[role].push_back(processName);
+    }
+    std::string out = root.dump(2);
+    out += "\n";
+    ParseConfig(out);  // throws ConfigError if the result is invalid
+    return out;
 }
 
 DaemonConfig LoadConfigFile(const std::wstring& path) {

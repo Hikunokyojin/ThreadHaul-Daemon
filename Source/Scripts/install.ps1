@@ -72,6 +72,12 @@ if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
 Write-Host "Installing binaries to $InstallDir"
 New-Item -ItemType Directory -Force -Path $InstallDir, $DataDir, $LogDir | Out-Null
 Copy-Item $exeSource $Exe -Force
+$dashSource = Join-Path $BinDir 'dashboard'
+if (Test-Path $dashSource) {
+    Copy-Item $dashSource (Join-Path $InstallDir 'dashboard') -Recurse -Force
+} else {
+    Write-Warning "Dashboard files not found in $dashSource; the web dashboard will be unavailable."
+}
 
 if ($OverwriteConfig -or -not (Test-Path $ConfigPath)) {
     Copy-Item $ConfigSource $ConfigPath -Force
@@ -133,4 +139,5 @@ if (-not $NoStart) {
     Get-Service $ServiceName | Format-Table Name, Status, StartType -AutoSize
     Write-Host "Log: $LogDir\threadhaul.jsonl"
     Write-Host "Try: & '$Exe' status"
+    Write-Host "Dashboard: & '$Exe' dashboard"
 }

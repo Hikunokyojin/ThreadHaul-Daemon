@@ -137,6 +137,8 @@ Note on the last row: a single transition out of `Suspended` back to `Normal` pe
 | `manual_override` | every CLI/controller command target | `command`, `process_id`, `process_name`, `ok`, `result` |
 | `alert` | a batch process was suspended | `alert` (`batch_suspended`), `batch_process_id`, `batch_process_name`, `popup`, `webhook` |
 | `self_monitor` | every `telemetry.self_monitor_interval_seconds` | `cpu_percent` (of one core), `working_set_mb`, `private_mb`, `handle_count`, `managed_batch_processes`, `tracked_critical_names` |
+| `dashboard` | dashboard start or failure | `event` (`started`/`start_failed`), `url` or `error` |
+| `dashboard_action` | a role was changed from the dashboard | `action` (`set_role`), `process_name`, `role`, `config_sha256` |
 | `coordination` | controller connection events | `event` (`coordination_connected`, `coordination_disconnected`, `coordination_bias`, `coordination_command`, `coordination_rejected`, `coordination_error`), `detail` |
 
 The controller (`ThreadHaulController`) writes its own `controller.jsonl` using the same `log_type` + `timestamp` conventions. Its log kinds are `controller_started`, `agent_connected`, `agent_disconnected`, `agent_rejected`, `heartbeat`, `agent_event`, `cluster_bias`, `command_sent`, `command_result` and `controller_stopped`.
@@ -197,7 +199,8 @@ Validation (any failure stops startup with a message naming the field):
 "adaptive":     { "enabled": false, "window_samples": 10, "horizon_samples": 3, "max_adjust_percent": 10 },
 "alerts":       { "popup": true, "webhook_url": "" },
 "coordination": { "enabled": false, "controller_host": "127.0.0.1", "controller_port": 7878, "shared_token": "", "heartbeat_seconds": 5 },
-"security":     { "require_protected_config": false }
+"security":     { "require_protected_config": false },
+"dashboard":    { "enabled": true, "port": 8787 }
 ```
 
 - `telemetry.cpu_normalization`: `"per_core"` means 100% is one logical core, so a 4-thread process can read 400%. `"total"` means 100% is every logical core.
@@ -211,6 +214,8 @@ Validation (any failure stops startup with a message naming the field):
   - The controller's bias is added under the same cap, and applies even with `enabled: false`.
 - `alerts.webhook_url`: must start with `http://` or `https://`. On suspension it receives an HTTP POST of the `actuator_action` JSON plus `"alert": "batch_suspended"`.
 - `coordination.controller_port`: 1–65535. `heartbeat_seconds`: 1–3600. The wire protocol is in `Source/Daemon/Coordination.h`.
+- `dashboard.port`: 1024–65535. The dashboard listens on 127.0.0.1 only; see §4.1.
+- `processes.critical` and `processes.batch` may be empty. The service then monitors nothing until processes are assigned, typically from the dashboard.
 - `security.require_protected_config`: when `true`, a config file that Everyone, Users, Authenticated Users or Interactive can write is refused instead of only warned about.
 
 **Hot reload.** The file's timestamp and size are checked every poll. A valid change is applied immediately to thresholds, process lists, the protection list, logging, alerts and coordination. Batch processes whose name was removed are restored and released, with trigger `config_reload`. An invalid change is logged as a `config_reload` failure, and the previous config stays in force.
@@ -218,6 +223,16 @@ Validation (any failure stops startup with a message naming the field):
 Log rotation is size-based: when the next line would push the file past `max_file_size_mb`, it is renamed to `<log_path>.1` (older files shift to `.2`, `.3`, ...) and files beyond `max_rotated_files` are deleted.
 
 ---
+
+### 4.1 Dashboard role changes and HTTP API
+
+`config::SetProcessRole(jsonText, name, role)` (Source/Config) moves an executable name between `processes.critical`, `processes.batch` and `processes.protected`, or removes it (`role` = `none`). It:
+- preserves key order and every other setting;
+- validates the result with `ParseConfig` before anything is written.
+
+The daemon writes the result with `ReplaceFileW`, which keeps the installed file's ACL, then applies it immediately through the normal hot-reload path.
+
+The dashboard API (`Source/Daemon/Dashboard.h`) is described in README → *Web dashboard*. Every `/api/` request must carry `X-ThreadHaul-Token`. The token is per run and is returned only by the `dashboard` request on the control pipe; that request is not available to the controller or over HTTP.
 
 ## 5. Change Protocol
 

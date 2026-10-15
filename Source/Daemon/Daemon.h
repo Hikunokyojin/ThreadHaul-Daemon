@@ -15,6 +15,7 @@
 #include "Config.h"
 #include "ControlPipe.h"
 #include "Coordination.h"
+#include "Dashboard.h"
 #include "EventLogWriter.h"
 #include "JsonLinesLogger.h"
 #include "ProcessMonitor.h"
@@ -51,6 +52,12 @@ public:
     // Console mode only: lets "ThreadHaulDaemon.exe stop" end the run
     // cleanly. A service is stopped through the Service Control Manager.
     void AllowRemoteStop(HANDLE stopEvent) { remoteStopEvent_ = stopEvent; }
+
+    // ---- Dashboard API (called from the dashboard's HTTP thread) ----
+    std::string DashboardStatus();                 // status + config summary + system stats
+    std::string ReadLog(long long offset);         // JSON Lines entries after a byte offset
+    std::string SetRole(const std::string& name, const std::string& role);
+    std::string ProcessRolesJson();                // lower-cased role lists + managed states
 
 private:
     void ApplyConfig(const config::DaemonConfig& cfg, bool initial);
@@ -94,6 +101,18 @@ private:
     const char* trigger_ = "automatic";
     ULONGLONG lastSelfLog_ = 0;
     HANDLE remoteStopEvent_ = nullptr;
+
+    // Dashboard. Started and stopped by UpdateDashboard() outside mutex_,
+    // because stopping it waits for an in-flight request that may itself be
+    // waiting for mutex_.
+    void UpdateDashboard();
+    std::string DashboardInfo();
+    std::unique_ptr<Dashboard> dashboard_;
+    bool dashboardDirty_ = true;
+    std::string dashboardError_;
+    ULONGLONG startedTick_ = 0;
+    uint64_t lastSysIdle_ = 0;
+    uint64_t lastSysTotal_ = 0;
 };
 
 std::wstring DefaultConfigPath(bool preferExeDirectory);

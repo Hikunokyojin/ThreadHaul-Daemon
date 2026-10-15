@@ -17,6 +17,7 @@ ThreadHaul-Daemon is a lightweight Windows Service, written in C++17 against the
 - [Building from source](#building-from-source)
 - [Installing as a Windows Service](#installing-as-a-windows-service)
 - [Using the service](#using-the-service)
+- [Web dashboard](#web-dashboard)
 - [Configuration](#configuration)
 - [Logs and monitoring](#logs-and-monitoring)
 - [Multi-server deployments](#multi-server-deployments)
@@ -65,6 +66,11 @@ Batch work runs at full speed whenever the server has capacity, and steps aside 
 **Operations**
 - Runs as a native Windows Service: automatic start, restart on failure, clean shutdown.
 - **Live configuration reload.** Edits to `config.json` apply within one poll interval. Invalid edits are rejected, and the service keeps running on the last valid configuration.
+- **Web dashboard** on `127.0.0.1`:
+  - live statistics and charts;
+  - a list of every running process, where you assign roles (critical, batch, protected) with no config editing;
+  - throttle, suspend, resume and release buttons;
+  - a searchable, filterable activity log with raw-JSON view and CSV export.
 - **Manual override CLI.** Throttle, suspend, resume or release any batch process on demand, and query live status.
 - **Structured JSON Lines log** with size-based rotation, plus **Windows Event Log** entries.
 - **Alerts** when a process is suspended: a desktop pop-up and/or an HTTP webhook (Teams, Slack, or an email relay).
@@ -146,6 +152,12 @@ Within a few seconds of each full-load phase, the batch window's output changes:
 - it shows `priority IDLE` (throttled);
 - then it stops printing (suspended);
 - then it reports `resumed after a pause` (recovered).
+
+To choose the real programs you want managed, open the dashboard and assign roles on its **Processes** tab:
+
+```powershell
+& "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" dashboard
+```
 
 For a detailed walkthrough with expected output at every step, see **[RUNNING.md](RUNNING.md)**.
 
@@ -234,6 +246,7 @@ $thd = "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe"
 & $thd suspend  invoice_batch.exe      # suspend all threads, and hold
 & $thd resume   invoice_batch.exe      # resume at normal priority, and hold
 & $thd release  invoice_batch.exe      # return to automatic control
+& $thd dashboard                       # open the web dashboard in your browser
 & $thd validate-config C:\ProgramData\ThreadHaulDaemon\config.json
 & $thd help
 ```
@@ -252,6 +265,34 @@ $thd = "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe"
  "critical":[{"name":"dispatch_api.exe","pid":4821,"cpu_percent":97.3}],
  "batch":[{"name":"invoice_batch.exe","pid":5190,"state":"throttled","manual_hold":false}]}
 ```
+
+## Web dashboard
+
+The service includes a web dashboard served at `http://127.0.0.1:8787` (loopback only). Open it from an Administrator prompt:
+
+```powershell
+& "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" dashboard
+```
+
+This asks the running service for a per-session access key over the administrator-only control channel, then opens your default browser with that key.
+
+| Tab | What it provides |
+|---|---|
+| **Overview** | Critical pressure against the effective thresholds; system CPU and memory; batch process counts by state; service uptime and footprint. Also a five-minute live chart, with periods when a batch process was suspended shaded, and per-process Throttle / Suspend / Resume / Release buttons. |
+| **Processes** | Every running process, with CPU % (per logical core) and memory, sortable and searchable. Set each program's role (**Critical**, **Batch**, **Protected** or **Unassigned**). The change is written to `config.json` and applied immediately, and the file's permissions are preserved. Windows system processes and the service itself are shown as *system protected* and can't be assigned. |
+| **Activity log** | The JSON Lines log rendered as a readable table, newest first, colour-coded by severity. Filter by event type, search text and time range; click a row for the pretty-printed raw JSON; export the filtered rows as CSV. New entries stream in live. |
+
+**HTTP API.** The page is a thin client over a small JSON API, which you can also script against. Every request needs the `X-ThreadHaul-Token` header.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/status` | The `status` object plus service details, the configured process lists, and system CPU and memory |
+| `GET /api/processes` | Every running process with CPU %, memory, role and managed state |
+| `GET /api/log?offset=N` | Log entries after byte offset `N`. `-1` returns the tail of the file. The response includes the next offset and a `reset` flag set after log rotation. |
+| `POST /api/command` | `{"command":"suspend","target":"<pid or exe name>"}`. Commands are `throttle`, `suspend`, `resume` and `release`. |
+| `POST /api/role` | `{"name":"<exe name>","role":"critical"}`. Roles are `critical`, `batch`, `protected` and `none`. |
+
+To change the port or turn the dashboard off, set `dashboard.port` or `dashboard.enabled` in `config.json`.
 
 ## Configuration
 
@@ -288,8 +329,8 @@ The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`. Edit 
 | `thresholds.high` | Throttle when pressure ≥ `percent` for `consecutive_samples` | 85%, 3 |
 | `thresholds.critical` | Suspend when pressure ≥ `percent` for `consecutive_samples` after throttling | 90%, 5 |
 | `thresholds.low` | Recover when pressure < `percent` for `consecutive_samples` | 60%, 5 |
-| `processes.critical` | Executable names to protect (at least one) | |
-| `processes.batch` | Executable names that may be throttled or suspended (at least one) | |
+| `processes.critical` | Executable names to protect. May be empty; assign them from the dashboard. | |
+| `processes.batch` | Executable names that may be throttled or suspended. May be empty. | |
 | `processes.protected` | Executable names that must never be touched | optional |
 | `logging.log_path` | JSON Lines log file | |
 | `logging.max_file_size_mb` / `max_rotated_files` | Rotation policy | 50 MB, 5 files |
@@ -306,6 +347,7 @@ The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`. Edit 
 | `alerts.webhook_url` | HTTP(S) endpoint that receives a JSON POST on suspension | empty |
 | `coordination.*` | Central controller connection (see below) | disabled |
 | `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
+| `dashboard.enabled` / `dashboard.port` | Web dashboard on `127.0.0.1` | `true`, 8787 (1024–65535) |
 
 **Validation rules:**
 - Every required field must be present and within range.
@@ -339,6 +381,7 @@ Each line of the log file is one complete JSON object, written in this form: `lo
 | `alert` | A suspension alert was sent |
 | `self_monitor` | Periodically: the service's own CPU, memory and handle count |
 | `service_lifecycle` | The service started or stopped. The start entry includes the configuration file's SHA-256. |
+| `dashboard` / `dashboard_action` | The dashboard started (or failed to start), or a role was changed from the dashboard |
 
 Follow it live:
 
@@ -423,6 +466,15 @@ The controller writes its own JSON Lines log (`controller.jsonl` by default). Al
   - The installer removes inherited permissions from `config.json`: SYSTEM and Administrators can modify it, the service account can read it, and other users have no access.
   - At every load the service checks that Everyone, Users, Authenticated Users and Interactive cannot write the file, and logs a warning if they can. With `security.require_protected_config` set to `true` it refuses to load such a file instead.
   - The file's SHA-256 is logged at start-up and on every reload.
+- **Dashboard.** The dashboard:
+  - listens on `127.0.0.1` only;
+  - requires a random per-session access key, handed out only over the administrator-only control channel, on every API call;
+  - rejects requests whose `Host` header isn't `127.0.0.1`/`localhost` (DNS rebinding);
+  - rejects cross-site `Origin` headers and non-JSON POST bodies, which blocks cross-site request forgery;
+  - serves only its own three static files;
+  - sends a strict Content-Security-Policy.
+
+  All page content is rendered as text, so log contents can't inject markup.
 - **Administrator-only control channel.** The CLI uses a local named pipe (`\\.\pipe\ThreadHaulDaemon`). Its access list admits only SYSTEM, Administrators and the service's own account, and remote clients are rejected.
 - **Controller authentication.** Nodes must present the shared token. Run the controller on a trusted network segment; the protocol does not encrypt traffic.
 - **Protection list.** The service itself, `System`, `Registry`, `smss.exe`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe` and `lsass.exe` are always protected, in addition to `processes.protected`.
@@ -439,6 +491,8 @@ The controller writes its own JSON Lines log (`controller.jsonl` by default). Al
 | `access denied: run this command as Administrator` | The control channel is administrator-only. |
 | The service stops right after starting | The configuration is invalid. Read Event ID 1900 for the field name and run `validate-config`. |
 | Batch processes are never throttled | Check that the names in `processes` match the executable names exactly, and look at `pressure_percent` in `status`. |
+| `Cannot open the dashboard` | The dashboard is disabled or its port is in use. Check `dashboard.*` and the `dashboard` entry in the log. |
+| Dashboard shows *Access key required* | Run `ThreadHaulDaemon.exe dashboard` again. The key changes when the service restarts. |
 | No pop-up on suspension | A user must be signed in at the console, and `alerts.popup` must be `true`. |
 | `An Application Control policy has blocked this file` | Windows Smart App Control can block newly compiled, unsigned binaries. Retry, or code-sign the build output. |
 
@@ -454,7 +508,9 @@ Source/
   Telemetry/               process discovery, CPU/memory/I-O sampling, predictive thresholds
   Config/                  configuration loading and validation, sample config.json
   Logging/                 JSON Lines logger with rotation, Windows Event Log writer
-  Daemon/                  service core: poll loop, live reload, control pipe, alerts, controller client
+  Daemon/                  service core: poll loop, live reload, control pipe, alerts, controller client,
+                           dashboard HTTP server and API
+  Dashboard/               web dashboard (index.html, app.js, styles.css; no external dependencies)
   Controller/              ThreadHaulController
   Simulators/              critical_simulator and batch_simulator test workloads
   Scripts/                 install.ps1, uninstall.ps1, log_viewer.py

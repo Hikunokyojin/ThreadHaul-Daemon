@@ -2,6 +2,7 @@
 // manual override. Run "ThreadHaulDaemon.exe help" for usage.
 
 #include <windows.h>
+#include <shellapi.h>
 
 #include <cstdio>
 #include <string>
@@ -195,7 +196,8 @@ void PrintUsage() {
         L"  ThreadHaulDaemon.exe resume   <pid|name>   resume + normal priority and hold\n"
         L"  ThreadHaulDaemon.exe release  <pid|name>   hand back to automatic control\n"
         L"  ThreadHaulDaemon.exe status                current pressure, thresholds, states\n"
-        L"  ThreadHaulDaemon.exe stop                  stop a console-mode daemon cleanly\n\n"
+        L"  ThreadHaulDaemon.exe stop                  stop a console-mode daemon cleanly\n"
+        L"  ThreadHaulDaemon.exe dashboard             open the live web dashboard in your browser\n\n"
         L"If no daemon is running, throttle/suspend/resume act on the process directly.\n");
 }
 
@@ -243,6 +245,27 @@ int wmain(int argc, wchar_t* argv[]) {
         }
         std::printf("Daemon not reachable (%s); acting directly:\n", response.c_str());
         return DirectAction(command, target);
+    }
+
+    if (command == L"dashboard") {
+        std::string response;
+        if (!daemon::SendControlRequest("dashboard", response)) {
+            std::printf("Cannot open the dashboard: %s\n", response.c_str());
+            return 1;
+        }
+        const std::string key = "\"url\":\"";
+        const size_t at = response.find(key);
+        if (at == std::string::npos) {
+            std::printf("%s\n", response.c_str());
+            return 1;
+        }
+        const std::string url = response.substr(at + key.size(),
+                                                response.find('"', at + key.size()) - at - key.size());
+        const std::wstring wurl(url.begin(), url.end());
+        std::printf("Opening %s\n(the link contains this session's access key; do not share it)\n",
+                    url.substr(0, url.find('#')).c_str());
+        ShellExecuteW(nullptr, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return 0;
     }
 
     if (command == L"validate-config") {

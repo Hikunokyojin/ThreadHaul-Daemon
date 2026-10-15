@@ -25,6 +25,9 @@ public:
     // Names are compared case-insensitively against the executable name.
     bool IsProtected(const std::wstring& processName, DWORD processId) const;
 
+    // The built-in names that are always protected, whatever the config says.
+    static std::vector<std::wstring> AlwaysProtectedNames();
+
     void RemoveBatchProcess(DWORD processId);
 
     // Stable public entry point for the Telemetry layer, per INTERFACES.md

@@ -63,6 +63,10 @@ struct DaemonConfig {
     // security.require_protected_config: refuse to load a config file that
     // non-administrators can modify.
     bool requireProtectedConfig = false;
+
+    // dashboard.*: local web dashboard served on 127.0.0.1 only.
+    bool dashboardEnabled = true;
+    int  dashboardPort = 8787;
 };
 
 // Thrown for unreadable, malformed, incomplete or out-of-range config. The
@@ -74,5 +78,13 @@ public:
 
 DaemonConfig ParseConfig(const std::string& jsonText);
 DaemonConfig LoadConfigFile(const std::wstring& path);
+
+// Returns jsonText with `processName` moved to the given role: "critical",
+// "batch", "protected", or "none" (removed from all three lists). Names are
+// matched case-insensitively; key order and every other setting are kept.
+// The result is validated with ParseConfig, so an invalid outcome throws
+// ConfigError and the caller's file is never written.
+std::string SetProcessRole(const std::string& jsonText, const std::string& processName,
+                           const std::string& role);
 
 }

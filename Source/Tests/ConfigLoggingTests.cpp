@@ -136,9 +136,10 @@ void RejectsInconsistentThresholds() {
 
 void RejectsBadProcessLists() {
     const nlohmann::json base = nlohmann::json::parse(kValidConfig);
-    nlohmann::json emptyBatch = base;
-    emptyBatch["processes"]["batch"] = nlohmann::json::array();
-    ExpectRejected(__func__, emptyBatch, "processes.batch");
+    nlohmann::json emptyLists = base;
+    emptyLists["processes"]["batch"] = nlohmann::json::array();
+    emptyLists["processes"]["critical"] = nlohmann::json::array();
+    Check(ParseError(emptyLists).empty(), __func__, "empty critical/batch lists are allowed");
 
     nlohmann::json pathName = base;
     pathName["processes"]["batch"] = {"C:\\apps\\invoice_batch.exe"};
@@ -331,6 +332,54 @@ void LogsGenericEventsAndTrigger(const fs::path& dir) {
           "actuator action carries trigger");
 }
 
+void ParsesDashboardSection() {
+    Check(config::ParseConfig(kValidConfig).dashboardEnabled &&
+              config::ParseConfig(kValidConfig).dashboardPort == 8787,
+          __func__, "dashboard defaults");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["dashboard"] = {{"enabled", false}, {"port", 9000}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(!c.dashboardEnabled && c.dashboardPort == 9000, __func__, "dashboard values");
+    cfg["dashboard"] = {{"port", 80}};
+    ExpectRejected(__func__, cfg, "dashboard.port");
+}
+
+void SetsProcessRoles() {
+    const std::string base = kValidConfig;
+    std::string out = config::SetProcessRole(base, "chrome.exe", "critical");
+    auto c = config::ParseConfig(out);
+    Check(c.criticalProcesses.size() == 2 && c.criticalProcesses[1] == L"chrome.exe", __func__,
+          "added to critical");
+
+    out = config::SetProcessRole(out, "CHROME.EXE", "batch");
+    c = config::ParseConfig(out);
+    Check(c.criticalProcesses.size() == 1 && c.batchProcesses.size() == 3, __func__,
+          "moved from critical to batch, matched case-insensitively");
+
+    out = config::SetProcessRole(out, "chrome.exe", "none");
+    c = config::ParseConfig(out);
+    Check(c.batchProcesses.size() == 2, __func__, "role none removes it");
+
+    out = config::SetProcessRole(out, "dispatch_api.exe", "none");
+    c = config::ParseConfig(out);
+    Check(c.criticalProcesses.empty(), __func__, "last critical process can be removed");
+
+    out = config::SetProcessRole(out, "notepad.exe", "protected");
+    c = config::ParseConfig(out);
+    Check(c.protectedProcesses.size() == 2, __func__, "added to protected");
+
+    Check(out.find("\"polling\"") < out.find("\"thresholds\"") &&
+              out.find("\"thresholds\"") < out.find("\"processes\""),
+          __func__, "key order preserved");
+
+    bool threw = false;
+    try { config::SetProcessRole(base, "x.exe", "boss"); } catch (const config::ConfigError&) { threw = true; }
+    Check(threw, __func__, "unknown role rejected");
+    threw = false;
+    try { config::SetProcessRole(base, "C:\\x.exe", "batch"); } catch (const config::ConfigError&) { threw = true; }
+    Check(threw, __func__, "path rejected");
+}
+
 }
 
 int main() {
@@ -342,6 +391,8 @@ int main() {
     RejectsInconsistentThresholds();
     RejectsBadProcessLists();
     RejectsMissingFile();
+    ParsesDashboardSection();
+    SetsProcessRoles();
 
     const fs::path dir =
         fs::temp_directory_path() / ("threadhaul_tests_" + std::to_string(GetCurrentProcessId()));

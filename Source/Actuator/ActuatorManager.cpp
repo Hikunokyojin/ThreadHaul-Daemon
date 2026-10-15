@@ -63,6 +63,10 @@ bool ActuatorManager::IsProtected(const std::wstring& processName, DWORD process
     return false;
 }
 
+std::vector<std::wstring> ActuatorManager::AlwaysProtectedNames() {
+    return std::vector<std::wstring>(std::begin(kAlwaysProtected), std::end(kAlwaysProtected));
+}
+
 void ActuatorManager::RemoveBatchProcess(DWORD processId) {
     machines_.erase(processId);
 }

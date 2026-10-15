@@ -33,7 +33,7 @@ The project includes two small test programs that play these roles, so you can s
 | Windows 10, Windows 11 or Windows Server 2016 or later | 64-bit |
 | Administrator rights on the computer | Needed to install a Windows Service |
 | Visual Studio 2019 or later, with the **Desktop development with C++** workload | Needed once, to compile the program. The free Community edition is fine. In the Visual Studio Installer, choose *Modify* and tick *Desktop development with C++*. |
-| Python 3 (optional) | Only needed for the graph in Step 8 |
+| Python 3 (optional) | Only needed for the graph in Step 9 |
 
 ### Open an Administrator PowerShell window
 
@@ -109,6 +109,8 @@ Installed config: C:\ProgramData\ThreadHaulDaemon\config.json
 Config locked to SYSTEM + Administrators (write), service account (read).
 Registered event-log source ThreadHaulDaemon (Application log).
 Service 'ThreadHaulDaemon' created (auto start, account LocalSystem).
+...
+Dashboard: & 'C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe' dashboard
 
 Name             Status  StartType
 ThreadHaulDaemon Running Automatic
@@ -179,7 +181,46 @@ The cycle repeats, so you can watch it as many times as you like.
 
 > On a computer with many CPU cores the batch program may not visibly slow down while throttled, because there is enough spare CPU for both programs. The change to `priority IDLE` and the complete pause during suspension are the reliable signs.
 
-## Step 6: Observe what the service is doing
+## Step 6: Open the web dashboard and choose real programs
+
+The service includes a web dashboard. It shows live statistics, lets you choose which **real programs** on the computer to protect or slow down, and displays the activity log in a readable form. It is served only to this computer, at `http://127.0.0.1:8787`.
+
+In the **Administrator window (Window 1)**:
+
+```powershell
+& "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" dashboard
+```
+
+Your default browser opens the dashboard. The address contains a one-time access key for this session, so don't share it. If you close the tab, run the command again to get back in. The key changes every time the service restarts.
+
+The dashboard has three tabs.
+
+**Overview**
+- Live statistics: the critical program's load against the thresholds, system CPU and memory, how many batch programs are running and in which state, and the service's own uptime and memory use.
+- A live chart of the last five minutes. Periods when a batch program was suspended are shaded.
+- A table of the batch programs, with **Throttle**, **Suspend**, **Resume** and **Release** buttons for each one.
+
+**Processes**: choose the real programs to manage.
+1. Every program running on the computer is listed, with its CPU and memory use. Use the search box to find one.
+2. In the **Role** column, choose:
+   - **Critical** for a program that must stay fast (for example a dispatch application, a database or a web server);
+   - **Batch** for a program that may be slowed or paused when the critical program is short of CPU (for example a backup, an indexer, a report job or a file sync);
+   - **Protected** for a program the service must never touch;
+   - **Unassigned** to stop managing it.
+3. The choice is saved to the settings file straight away and takes effect within a second. A role applies to every running copy of that program name.
+
+Windows system processes are marked **system protected** and cannot be assigned a role.
+
+> To keep using the test programs from Step 5, leave `critical_simulator.exe` as **Critical** and `batch_simulator.exe` as **Batch**. That's how the installed settings start. To manage your real programs instead, change these roles, or set the two test programs to **Unassigned**.
+
+**Activity log**: everything the service has recorded, in a readable table, newest first.
+- Click a coloured event-type button to show or hide that type of entry. *Hide samples* removes the once-per-second measurements.
+- Search by program name or text, or choose a **From** / **To** time range.
+- Click any row to see the original log entry as formatted JSON.
+- **Export CSV** downloads the rows currently shown, for use in Excel or another tool.
+- Turn off **Live** to stop new entries arriving while you read.
+
+## Step 7: Observe what the service is doing
 
 Run these in the **Administrator window (Window 1)** while the test programs are running.
 
@@ -218,7 +259,7 @@ Get-EventLog -LogName Application -Source ThreadHaulDaemon -Newest 5
 
 The same entries are visible in **Event Viewer** → *Windows Logs* → *Application*, with source **ThreadHaulDaemon**.
 
-## Step 7: Control a program manually (optional)
+## Step 8: Control a program manually (optional)
 
 An administrator can override the automatic behaviour at any time. In the Administrator window:
 
@@ -244,7 +285,7 @@ All manual commands:
 
 Programs on the protected list, such as `explorer.exe`, are always refused, so the service can't destabilise Windows.
 
-## Step 8: Produce a graph of the activity (optional, requires Python)
+## Step 9: Produce a graph of the activity (optional, requires Python)
 
 Install the graphing library once:
 
@@ -264,7 +305,7 @@ The script prints a table of every action the service took and the service's own
 - the batch program's state over time;
 - the service's own resource use.
 
-## Step 9: Change the settings (optional)
+## Step 10: Change the settings (optional)
 
 The settings file is protected, so only an administrator can edit it. From the Administrator window:
 
@@ -284,6 +325,7 @@ Changes take effect within one second of saving; there's no need to restart the 
 | `processes.protected` | Programs that must never be touched | `explorer.exe`, ... |
 | `adaptive.enabled` | Lower the thresholds early when load is rising quickly | `false` |
 | `alerts.popup` | Show a pop-up when a program is suspended | `true` |
+| `dashboard.enabled` / `dashboard.port` | Turn the web dashboard on or off, and choose its port | `true`, 8787 |
 
 If you save an invalid setting (for example a recovery level higher than the throttle level), the service rejects it, records the reason in the log, and keeps running with the previous settings. To check a settings file before saving it in place:
 
@@ -291,7 +333,7 @@ If you save an invalid setting (for example a recovery level higher than the thr
 & "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" validate-config C:\ProgramData\ThreadHaulDaemon\config.json
 ```
 
-## Step 10: Finish the demonstration
+## Step 11: Finish the demonstration
 
 Close Windows 2 and 3 (or press **Ctrl+C** in each). The service keeps running in the background and starts automatically when Windows starts.
 
@@ -304,7 +346,7 @@ Start-Service ThreadHaulDaemon
 
 Stopping the service always restores any program it has slowed or paused before it exits.
 
-## Step 11: Uninstall
+## Step 12: Uninstall
 
 From the Administrator window, in the project folder:
 
@@ -360,5 +402,7 @@ Then start the two test programs as in Step 5. To stop, press **Ctrl+C** or run 
 | `access denied: run this command as Administrator` | Manual commands require administrator rights | Use the Administrator window |
 | The batch program never shows `priority IDLE` | The program names in the settings don't match the running programs, or the critical program isn't running | Check the `status` output; the names in `processes.critical` and `processes.batch` must match exactly |
 | `An Application Control policy has blocked this file` | Windows Smart App Control sometimes blocks newly compiled programs | Run the command again. If it persists, the programs need to be code-signed. |
+| `Cannot open the dashboard: ...` | The dashboard is turned off, or its port is already used by another program | Check `dashboard.enabled`, or set `dashboard.port` to a free port such as 8790; the log records `start_failed` with the reason |
+| The dashboard shows *Access key required* | The page was opened without a key, or the service restarted | Run `ThreadHaulDaemon.exe dashboard` again from the Administrator window |
 | No pop-up appears | A user must be signed in at the console, and `alerts.popup` must be `true` | Check the setting; the log and Event Log still record the event |
 | The service stops shortly after starting | The settings file is invalid | Read event 1900 in the Event Log for the reason, correct the file, then `Start-Service ThreadHaulDaemon` |

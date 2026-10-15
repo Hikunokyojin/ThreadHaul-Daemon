@@ -16,12 +16,12 @@ if not exist "%OBJ%" mkdir "%OBJ%"
 
 set CFLAGS=/nologo /std:c++17 /EHsc /W3 /O2 /MT /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX
 set INC=/I"%SRC%\Actuator" /I"%SRC%\Config" /I"%SRC%\Logging" /I"%SRC%\Telemetry" /I"%SRC%\Daemon" /I"%THIRD%"
-set LIBS=advapi32.lib ws2_32.lib winhttp.lib wtsapi32.lib bcrypt.lib user32.lib
+set LIBS=advapi32.lib ws2_32.lib winhttp.lib wtsapi32.lib bcrypt.lib user32.lib shell32.lib
 
 set ACTUATOR="%SRC%\Actuator\StateMachine.cpp" "%SRC%\Actuator\ActuatorManager.cpp" "%SRC%\Actuator\PriorityControl.cpp" "%SRC%\Actuator\ThreadControl.cpp"
-set TELEMETRY="%SRC%\Telemetry\CpuMath.cpp" "%SRC%\Telemetry\ProcessMonitor.cpp" "%SRC%\Telemetry\AdaptiveThresholds.cpp"
+set TELEMETRY="%SRC%\Telemetry\CpuMath.cpp" "%SRC%\Telemetry\ProcessMonitor.cpp" "%SRC%\Telemetry\AdaptiveThresholds.cpp" "%SRC%\Telemetry\ProcessTable.cpp"
 set CONFIGLOG="%SRC%\Config\Config.cpp" "%SRC%\Logging\JsonLinesLogger.cpp" "%SRC%\Logging\EventLogWriter.cpp"
-set DAEMON="%SRC%\Daemon\Daemon.cpp" "%SRC%\Daemon\Alerts.cpp" "%SRC%\Daemon\ConfigSecurity.cpp" "%SRC%\Daemon\ControlPipe.cpp" "%SRC%\Daemon\Coordination.cpp"
+set DAEMON="%SRC%\Daemon\Daemon.cpp" "%SRC%\Daemon\Alerts.cpp" "%SRC%\Daemon\ConfigSecurity.cpp" "%SRC%\Daemon\ControlPipe.cpp" "%SRC%\Daemon\Coordination.cpp" "%SRC%\Daemon\HttpServer.cpp" "%SRC%\Daemon\Dashboard.cpp"
 
 echo [1/5] ThreadHaulDaemon.exe
 cl %CFLAGS% %INC% "%SRC%\main.cpp" %ACTUATOR% %TELEMETRY% %CONFIGLOG% %DAEMON% %LIBS% /Fo"%OBJ%\\" /Fe"%OUT%\ThreadHaulDaemon.exe" >"%OUT%\build.log" || goto :failed
@@ -34,8 +34,10 @@ echo [4/5] unit tests
 cl %CFLAGS% %INC% "%SRC%\Tests\StateMachineTests.cpp" %ACTUATOR% advapi32.lib /Fo"%OBJ%\\" /Fe"%OUT%\StateMachineTests.exe" >>"%OUT%\build.log" || goto :failed
 cl %CFLAGS% %INC% "%SRC%\Tests\ConfigLoggingTests.cpp" "%SRC%\Config\Config.cpp" "%SRC%\Logging\JsonLinesLogger.cpp" /Fo"%OBJ%\\" /Fe"%OUT%\ConfigLoggingTests.exe" >>"%OUT%\build.log" || goto :failed
 cl %CFLAGS% %INC% "%SRC%\Tests\TelemetryTests.cpp" %TELEMETRY% advapi32.lib /Fo"%OBJ%\\" /Fe"%OUT%\TelemetryTests.exe" >>"%OUT%\build.log" || goto :failed
-echo [5/5] sample config
+echo [5/5] sample config and dashboard files
 copy /y "%SRC%\Config\config.json" "%OUT%\config.json" >nul
+if not exist "%OUT%\dashboard" mkdir "%OUT%\dashboard"
+copy /y "%SRC%\Dashboard\*" "%OUT%\dashboard\" >nul
 echo Build OK -^> %OUT%
 
 if /i "%~1"=="test" goto :test

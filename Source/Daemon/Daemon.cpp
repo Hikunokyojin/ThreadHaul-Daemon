@@ -1,11 +1,15 @@
 #include "Daemon.h"
 
+#include <psapi.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <sstream>
 
 #include "ConfigSecurity.h"
+
+#include <fstream>
 
 namespace daemon {
 
@@ -104,6 +108,7 @@ Daemon::Daemon(std::wstring configPath) : configPath_(std::move(configPath)) {
 }
 
 Daemon::~Daemon() {
+    if (dashboard_) dashboard_->Stop();
     if (pipe_) pipe_->Stop();
     if (coordination_) coordination_->Stop();
 }
@@ -149,8 +154,13 @@ bool Daemon::Initialize(std::wstring& error) {
         });
     ApplyConfig(cfg, true);
 
-    pipe_ = std::make_unique<ControlPipeServer>(
-        [this](const std::string& req) { return HandleCommand(req); });
+    // "dashboard" is answered only here, on the administrator-only pipe, so
+    // the dashboard token is never sent to the controller or over HTTP.
+    pipe_ = std::make_unique<ControlPipeServer>([this](const std::string& req) {
+        return req == "dashboard" ? DashboardInfo() : HandleCommand(req);
+    });
+    dashboard_ = std::make_unique<Dashboard>(*this);
+    startedTick_ = GetTickCount64();
     pipe_->Start();
     lastSelfLog_ = GetTickCount64();  // first self-sample needs a full interval
 
@@ -172,6 +182,10 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
         initial || cfg.coordinationEnabled != cfg_.coordinationEnabled ||
         cfg.controllerHost != cfg_.controllerHost || cfg.controllerPort != cfg_.controllerPort ||
         cfg.sharedToken != cfg_.sharedToken || cfg.heartbeatSeconds != cfg_.heartbeatSeconds;
+    if (initial || cfg.dashboardEnabled != cfg_.dashboardEnabled ||
+        cfg.dashboardPort != cfg_.dashboardPort) {
+        dashboardDirty_ = true;
+    }
     cfg_ = cfg;
 
     if (logChanged) {
@@ -273,6 +287,7 @@ void Daemon::CheckConfigReload() {
 
 void Daemon::Run(HANDLE stopEvent) {
     while (true) {
+        UpdateDashboard();
         const ULONGLONG started = GetTickCount64();
         {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -287,6 +302,7 @@ void Daemon::Run(HANDLE stopEvent) {
         }
     }
 
+    if (dashboard_) dashboard_->Stop();
     if (pipe_) pipe_->Stop();
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -518,6 +534,243 @@ std::string Daemon::StatusJson() {
     });
     j["batch"] = batch;
     return j.dump();
+}
+
+void Daemon::UpdateDashboard() {
+    bool enabled;
+    int port;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        if (!dashboardDirty_ || !dashboard_) return;
+        dashboardDirty_ = false;
+        enabled = cfg_.dashboardEnabled;
+        port = cfg_.dashboardPort;
+    }
+    dashboard_->Stop();
+    std::string error;
+    const bool ok = enabled && dashboard_->Start(port, error);
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    dashboardError_ = enabled ? error : "the dashboard is disabled (dashboard.enabled is false)";
+    if (enabled) {
+        Log("dashboard", ok ? ordered_json{{"event", "started"},
+                                           {"url", "http://127.0.0.1:" + std::to_string(port)}}
+                            : ordered_json{{"event", "start_failed"}, {"error", error}});
+    }
+}
+
+std::string Daemon::DashboardInfo() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (dashboard_ && dashboard_->Running()) {
+        ordered_json j = Reply(true, "dashboard running");
+        j["url"] = dashboard_->Url();
+        return j.dump();
+    }
+    return Reply(false, dashboardError_.empty() ? "dashboard is starting; try again" : dashboardError_)
+        .dump();
+}
+
+std::string Daemon::DashboardStatus() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    ordered_json j = ordered_json::parse(StatusJson());
+
+    ordered_json svc;
+    svc["pid"] = GetCurrentProcessId();
+    svc["uptime_seconds"] = (GetTickCount64() - startedTick_) / 1000;
+    svc["config_path"] = Narrow(configPath_);
+    svc["log_path"] = Narrow(cfg_.logPath);
+    svc["poll_interval_ms"] = cfg_.pollIntervalMs;
+    svc["cpu_normalization"] = cfg_.cpuPerCore ? "per_core" : "total";
+    svc["adaptive_enabled"] = cfg_.adaptiveEnabled;
+    svc["memory_trigger"] = cfg_.memoryTriggerEnabled;
+    svc["io_trigger"] = cfg_.ioTriggerEnabled;
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        svc["working_set_mb"] = Round1(pmc.WorkingSetSize / (1024.0 * 1024.0));
+    }
+    j["service"] = svc;
+
+    j["base_thresholds"] = {{"high", base_.throttleThresholdPercent},
+                            {"critical", base_.escalateThresholdPercent},
+                            {"low", base_.recoverThresholdPercent},
+                            {"high_samples", base_.throttleConsecutiveSamples},
+                            {"critical_samples", base_.escalateConsecutiveSamples},
+                            {"low_samples", base_.recoverConsecutiveSamples}};
+
+    ordered_json lists;
+    auto names = [](const std::vector<std::wstring>& v) {
+        ordered_json a = ordered_json::array();
+        for (const auto& n : v) a.push_back(Narrow(n));
+        return a;
+    };
+    lists["critical"] = names(cfg_.criticalProcesses);
+    lists["batch"] = names(cfg_.batchProcesses);
+    lists["protected"] = names(cfg_.protectedProcesses);
+    j["configured"] = lists;
+
+    ordered_json sys;
+    FILETIME idleFt, kernelFt, userFt;
+    if (GetSystemTimes(&idleFt, &kernelFt, &userFt)) {
+        const uint64_t idle = telemetry::FileTimeToUint64(idleFt);
+        const uint64_t total = telemetry::FileTimeToUint64(kernelFt) + telemetry::FileTimeToUint64(userFt);
+        double busy = 0.0;
+        if (lastSysTotal_ != 0 && total > lastSysTotal_) {
+            busy = 100.0 * (1.0 - static_cast<double>(idle - lastSysIdle_) /
+                                      static_cast<double>(total - lastSysTotal_));
+        }
+        lastSysIdle_ = idle;
+        lastSysTotal_ = total;
+        sys["cpu_percent"] = Round1(std::clamp(busy, 0.0, 100.0));
+    }
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        sys["memory_load_percent"] = ms.dwMemoryLoad;
+        sys["memory_total_gb"] = Round1(ms.ullTotalPhys / (1024.0 * 1024.0 * 1024.0));
+        sys["memory_used_gb"] = Round1((ms.ullTotalPhys - ms.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0));
+    }
+    sys["logical_cores"] = cores_;
+    j["system"] = sys;
+    return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+std::string Daemon::ProcessRolesJson() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    auto lowered = [](std::vector<std::wstring> v) {
+        nlohmann::json a = nlohmann::json::array();
+        for (auto& n : v) {
+            CharLowerBuffW(n.data(), static_cast<DWORD>(n.size()));
+            a.push_back(Narrow(n));
+        }
+        return a;
+    };
+    nlohmann::json j;
+    j["critical"] = lowered(cfg_.criticalProcesses);
+    j["batch"] = lowered(cfg_.batchProcesses);
+    j["protected"] = lowered(cfg_.protectedProcesses);
+    j["builtin_protected"] = lowered(actuator::ActuatorManager::AlwaysProtectedNames());
+    nlohmann::json states = nlohmann::json::object();
+    actuator_->ForEach([&](const actuator::ProcessStateMachine& m) {
+        states[std::to_string(m.BatchProcessId())] = logging::StateName(m.CurrentState());
+    });
+    j["states"] = states;
+    return j.dump();
+}
+
+std::string Daemon::SetRole(const std::string& name, const std::string& role) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::ifstream in(std::filesystem::path(configPath_), std::ios::binary);
+    if (!in) {
+        return Reply(false, "cannot read " + Narrow(configPath_)).dump();
+    }
+    std::ostringstream text;
+    text << in.rdbuf();
+    in.close();
+
+    std::string updated;
+    try {
+        updated = config::SetProcessRole(text.str(), name, role);
+    } catch (const config::ConfigError& e) {
+        return Reply(false, e.what()).dump();
+    }
+
+    // Write a temporary file, then swap it in with ReplaceFileW, which keeps
+    // the original file's permissions (the installer's lock-down) intact.
+    const std::wstring temp = configPath_ + L".tmp";
+    {
+        std::ofstream out(std::filesystem::path(temp), std::ios::binary | std::ios::trunc);
+        if (!out || !(out << updated)) {
+            return Reply(false, "cannot write " + Narrow(temp)).dump();
+        }
+    }
+    if (!ReplaceFileW(configPath_.c_str(), temp.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS,
+                      nullptr, nullptr)) {
+        const DWORD err = GetLastError();
+        DeleteFileW(temp.c_str());
+        return Reply(false, "cannot update " + Narrow(configPath_) + " (error " +
+                                std::to_string(err) + ")")
+            .dump();
+    }
+    Log("dashboard_action", ordered_json{{"action", "set_role"},
+                                         {"process_name", name},
+                                         {"role", role},
+                                         {"config_sha256", Sha256File(configPath_)}});
+    CheckConfigReload();  // apply now rather than on the next poll
+    return Reply(true, role == "none" ? name + " is no longer monitored"
+                                      : name + " is now a " + role + " process")
+        .dump();
+}
+
+std::string Daemon::ReadLog(long long offset) {
+    std::wstring path;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        path = cfg_.logPath;
+    }
+    constexpr long long kTail = 256 * 1024;
+    constexpr long long kMaxRead = 1024 * 1024;
+
+    ordered_json j;
+    j["ok"] = true;
+    j["log_path"] = Narrow(path);
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        j["offset"] = 0;
+        j["reset"] = offset != 0;
+        j["entries"] = ordered_json::array();
+        j["note"] = "log file not created yet";
+        return j.dump();
+    }
+    LARGE_INTEGER sizeLi{};
+    GetFileSizeEx(h, &sizeLi);
+    const long long size = sizeLi.QuadPart;
+
+    bool reset = false;
+    long long start = offset;
+    if (offset < 0) {                 // first load: the tail of the file
+        start = std::max(0LL, size - kTail);
+        reset = true;
+    } else if (offset > size) {       // the file was rotated
+        start = 0;
+        reset = true;
+    }
+    const long long length = std::min(size - start, kMaxRead);
+    std::string buf(static_cast<size_t>(std::max(0LL, length)), '\0');
+    DWORD read = 0;
+    LARGE_INTEGER pos;
+    pos.QuadPart = start;
+    if (length > 0) {
+        SetFilePointerEx(h, pos, nullptr, FILE_BEGIN);
+        ReadFile(h, buf.data(), static_cast<DWORD>(length), &read, nullptr);
+    }
+    CloseHandle(h);
+    buf.resize(read);
+
+    size_t begin = 0;
+    if (offset < 0 && start > 0) {    // skip the partial first line of the tail
+        const size_t nl = buf.find('\n');
+        begin = nl == std::string::npos ? buf.size() : nl + 1;
+    }
+    const size_t lastNl = buf.rfind('\n');
+    const size_t end = lastNl == std::string::npos || lastNl < begin ? begin : lastNl + 1;
+
+    ordered_json entries = ordered_json::array();
+    size_t p = begin;
+    while (p < end) {
+        size_t nl = buf.find('\n', p);
+        if (nl == std::string::npos || nl > end) nl = end;
+        std::string line = buf.substr(p, nl - p);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const ordered_json e = ordered_json::parse(line, nullptr, false);
+        if (!e.is_discarded() && e.is_object()) entries.push_back(e);
+        p = nl + 1;
+    }
+    j["offset"] = start + static_cast<long long>(end);
+    j["reset"] = reset;
+    j["size"] = size;
+    j["entries"] = entries;
+    return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 std::string Daemon::HandleCommand(const std::string& line) {
