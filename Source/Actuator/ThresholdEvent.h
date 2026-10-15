@@ -3,7 +3,7 @@
 // Shared cross-layer struct, confirmed in INTERFACES.md section 2.
 // Lives here (Actuator's folder) because ActuatorManager::OnThresholdEvent
 // is the consumer that fixes this struct's real shape; Telemetry
-// (Prakul) should include this exact header rather than redefining it.
+// should include this exact header rather than redefining it.
 // If the team later adds a Source/Shared/ folder, this file should move
 // there without changing its contents -- flag that as a team decision,
 // not something to do unilaterally.

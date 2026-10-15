@@ -4,16 +4,16 @@
 
 This file is the single source of truth for cross-layer interfaces. No layer invents its own field names, types, or schema — if something here doesn't match reality, this file gets fixed first, then the code.
 
-Owners:
-- Actuator/Scheduling — Divik
-- Telemetry/Monitoring — Prakul
-- Configuration/Logging/Integration — Pranav
+Modules:
+- Actuator/Scheduling: priority demotion, thread suspension and recovery of batch processes (`Source/Actuator`)
+- Telemetry/Monitoring: process discovery, CPU/memory/I-O sampling, predictive thresholds (`Source/Telemetry`)
+- Configuration/Logging/Integration: config loading and validation, logging, and the service core (`Source/Config`, `Source/Logging`, `Source/Daemon`)
 
 ---
 
 ## 1. Fixed System Constants
 
-These are agreed project-wide. Do not hardcode duplicates in more than one layer — Pranav's config layer is the single owner of these values at runtime; other layers read them from config, not from their own constants.
+These are agreed project-wide. Do not hardcode duplicates in more than one layer — the Configuration layer is the single owner of these values at runtime; other layers read them from config, not from their own constants.
 
 | Name | Value | Meaning |
 |---|---|---|
@@ -31,7 +31,7 @@ These are the defaults. At runtime the values come from `config.json` (§4); no 
 
 ## 2. Telemetry → Actuator Event Interface
 
-**Status: CONFIRMED against `Source/Actuator/ActuatorManager.h`/`.cpp` (Divik, 2026-09-25).**
+**Status: CONFIRMED against `Source/Actuator/ActuatorManager.h`/`.cpp` (2026-09-25).**
 
 Real shape, matching the code as built:
 
@@ -77,9 +77,9 @@ struct ThresholdEvent {
 
 ## 3. Structured Log Schema (JSON Lines)
 
-Owner: Pranav defines and owns this schema centrally; Prakul and Divik's layers write through Pranav's logging component using these exact field names. One JSON object per line, UTF-8, no trailing comma.
+The Logging layer defines and owns this schema centrally; the Telemetry and Actuator layers write through the logging component using these exact field names. One JSON object per line, UTF-8, no trailing comma.
 
-### 3.1 Telemetry sample log (written every poll, by Telemetry via Pranav's logger)
+### 3.1 Telemetry sample log (written every poll, by Telemetry via the logging component)
 
 ```json
 {"log_type": "sample", "timestamp": "2026-09-24T14:03:21.501Z", "process_id": 4821, "cpu_percent": 42.7, "process_name": "dispatch_api.exe", "memory_mb": 182.4, "io_mb_per_sec": 0.3, "pressure_percent": 42.7, "trigger_signal": "cpu"}
@@ -91,7 +91,7 @@ Owner: Pranav defines and owns this schema centrally; Prakul and Divik's layers 
 
 `cpu_percent` uses the configured normalisation (§4 `telemetry.cpu_normalization`). Samples are skipped for the first poll after a process is (re)acquired, because there is no CPU delta yet.
 
-### 3.2 Threshold trigger event log (written by Telemetry via Pranav's logger, when a threshold fires)
+### 3.2 Threshold trigger event log (written by Telemetry via the logging component, when a threshold fires)
 
 ```json
 {"log_type": "threshold_event", "timestamp": "2026-09-24T14:03:24.501Z", "process_id": 4821, "threshold": "high", "consecutive_samples": 3, "cpu_percent": 87.2}
@@ -221,4 +221,4 @@ Log rotation is size-based: when the next line would push the file past `max_fil
 
 ## 5. Change Protocol
 
-If any layer needs a field added/renamed/removed in sections 2–4: edit this file first, post the diff to the team (or whatever your team's communication channel is), get at minimum a thumbs-up from the other two owners, THEN change code. This file being out of sync with reality is the single most likely cause of integration failure at the end of this project — treat edits to it as seriously as you'd treat an API contract change on a real team.
+If any layer needs a field added/renamed/removed in sections 2–4: edit this file first, propose the change for review (for example in the pull request that needs it), get approval from the maintainers of the other affected modules, THEN change code. This file being out of sync with reality is the single most likely cause of integration failure — treat edits to it as seriously as any API contract change.
