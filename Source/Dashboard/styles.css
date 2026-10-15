@@ -198,6 +198,31 @@ input[type="search"] { min-width: 240px; }
 .chip.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .chip .count { opacity: 0.7; margin-left: 4px; }
 
+/* ---------- process safety ---------- */
+.badge.safety-essential { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+.badge.safety-system { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.badge.safety-service { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.safety-legend { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+.safety-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+#proc-table tr.row-essential td { background: color-mix(in srgb, var(--bad-soft) 55%, transparent); }
+#proc-table tr.row-essential td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+#proc-table tr.row-system td { background: color-mix(in srgb, var(--warn-soft) 55%, transparent); }
+#proc-table tr.row-system td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+#proc-table tr.row-service td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.proc-path { display: block; font-size: 11px; color: var(--muted); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- confirmation dialog ---------- */
+.modal { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 15, 22, 0.55); padding: 20px; }
+.modal-card { max-width: 520px; width: 100%; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px 22px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3); }
+.modal-card h2 { margin: 0 0 8px; font-size: 17px; }
+.modal-card p { margin: 0 0 10px; }
+.modal-reason { font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 8px 10px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.btn-danger-solid { background: var(--bad); border-color: var(--bad); color: #fff; }
+.btn-danger-solid:hover:not(:disabled) { color: #fff; filter: brightness(1.1); }
+
 /* ---------- log ---------- */
 .log-table td { vertical-align: top; }
 .log-table tr.entry { cursor: pointer; }

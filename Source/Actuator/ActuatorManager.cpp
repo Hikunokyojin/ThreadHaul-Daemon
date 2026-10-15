@@ -5,10 +5,17 @@ namespace actuator {
 namespace {
 
 // Demoting or suspending any of these can hang or crash Windows, so they are
-// protected even if the configured list leaves them out.
+// protected even if the configured list leaves them out:
+//  - kernel and session managers, logon and security (System ... lsass.exe);
+//  - svchost.exe hosts most Windows services (networking, audio, updates);
+//  - dwm.exe draws the desktop, so suspending it freezes the screen;
+//  - fontdrvhost.exe, LsaIso.exe, Memory Compression and Secure System are
+//    core user-mode and virtualisation-based-security components.
 const wchar_t* const kAlwaysProtected[] = {
     L"[System Process]", L"System", L"Registry", L"smss.exe", L"csrss.exe",
     L"wininit.exe", L"winlogon.exe", L"services.exe", L"lsass.exe",
+    L"svchost.exe", L"dwm.exe", L"fontdrvhost.exe", L"LsaIso.exe",
+    L"Memory Compression", L"Secure System",
 };
 
 bool NamesEqualIgnoreCase(const std::wstring& a, const wchar_t* b) {

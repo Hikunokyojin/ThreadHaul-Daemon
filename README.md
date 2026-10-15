@@ -279,7 +279,7 @@ This asks the running service for a per-session access key over the administrato
 | Tab | What it provides |
 |---|---|
 | **Overview** | Critical pressure against the effective thresholds; system CPU and memory; batch process counts by state; service uptime and footprint. Also a five-minute live chart, with periods when a batch process was suspended shaded, and per-process Throttle / Suspend / Resume / Release buttons. |
-| **Processes** | Every running process, with CPU % (per logical core) and memory, sortable and searchable. Set each program's role (**Critical**, **Batch**, **Protected** or **Unassigned**). The change is written to `config.json` and applied immediately, and the file's permissions are preserved. Windows system processes and the service itself are shown as *system protected* and can't be assigned. |
+| **Processes** | Every running process, with CPU % (per logical core) and memory, sortable and searchable. Set each program's role (**Critical**, **Batch**, **Protected** or **Unassigned**). The change is written to `config.json` and applied immediately, and the file's permissions are preserved. Each process carries a safety level: *Essential* (never managed), *System process* (part of Windows, hidden by default), or *Background service*. Managing a system process or service requires an explicit confirmation. |
 | **Activity log** | The JSON Lines log rendered as a readable table, newest first, colour-coded by severity. Filter by event type, search text and time range; click a row for the pretty-printed raw JSON; export the filtered rows as CSV. New entries stream in live. |
 
 **HTTP API.** The page is a thin client over a small JSON API, which you can also script against. Every request needs the `X-ThreadHaul-Token` header.
@@ -289,8 +289,19 @@ This asks the running service for a per-session access key over the administrato
 | `GET /api/status` | The `status` object plus service details, the configured process lists, and system CPU and memory |
 | `GET /api/processes` | Every running process with CPU %, memory, role and managed state |
 | `GET /api/log?offset=N` | Log entries after byte offset `N`. `-1` returns the tail of the file. The response includes the next offset and a `reset` flag set after log rotation. |
-| `POST /api/command` | `{"command":"suspend","target":"<pid or exe name>"}`. Commands are `throttle`, `suspend`, `resume` and `release`. |
-| `POST /api/role` | `{"name":"<exe name>","role":"critical"}`. Roles are `critical`, `batch`, `protected` and `none`. |
+| `POST /api/command` | `{"command":"suspend","target":"<pid or exe name>","confirm":false}`. Commands are `throttle`, `suspend`, `resume` and `release`. |
+| `POST /api/role` | `{"name":"<exe name>","role":"critical","confirm":false}`. Roles are `critical`, `batch`, `protected` and `none`. |
+
+**Process safety.** To protect Windows from accidental damage, the service classifies every process:
+
+| Safety level | Meaning | What the dashboard does |
+|---|---|---|
+| **Essential** | Windows cannot run without it: kernel, session and logon processes, `svchost.exe`, `dwm.exe` and similar, plus the service itself | Shown with a red badge; it can never be given a role, throttled or suspended (the service also refuses it from the command line) |
+| **System process** | Its program file is inside the Windows folder, or Windows denies access to it | Hidden unless **Show Windows & system processes** is ticked, highlighted in amber, and a warning dialog must be confirmed before it is made critical or batch, throttled or suspended |
+| **Background service** | Runs as SYSTEM, LOCAL SERVICE or NETWORK SERVICE, or in the services session | Highlighted in blue, with the same confirmation |
+| *(no badge)* | An ordinary application | Managed without extra prompts |
+
+The service enforces this, not just the page. A request that would make a system process or service critical or batch, or throttle or suspend one, returns `{"ok":false,"needs_confirmation":true,"safety":"system","message":"<reason>"}` until it is repeated with `"confirm":true`. Essential processes are always refused.
 
 To change the port or turn the dashboard off, set `dashboard.port` or `dashboard.enabled` in `config.json`.
 
@@ -477,7 +488,12 @@ The controller writes its own JSON Lines log (`controller.jsonl` by default). Al
   All page content is rendered as text, so log contents can't inject markup.
 - **Administrator-only control channel.** The CLI uses a local named pipe (`\\.\pipe\ThreadHaulDaemon`). Its access list admits only SYSTEM, Administrators and the service's own account, and remote clients are rejected.
 - **Controller authentication.** Nodes must present the shared token. Run the controller on a trusted network segment; the protocol does not encrypt traffic.
-- **Protection list.** The service itself, `System`, `Registry`, `smss.exe`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe` and `lsass.exe` are always protected, in addition to `processes.protected`.
+- **Protection list.** These are always protected, in addition to `processes.protected`:
+  - the service itself;
+  - `System`, `Registry`, `smss.exe`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe` and `lsass.exe`;
+  - `svchost.exe`, `dwm.exe`, `fontdrvhost.exe`, `LsaIso.exe`, `Memory Compression` and `Secure System`.
+
+  The dashboard also asks for confirmation before managing any other part of Windows or any background service.
 - **Graceful failure.** If a process can't be opened (access denied, or the process has exited), the outcome is logged with `actuation_succeeded: false` and the service carries on.
 
 ## Troubleshooting

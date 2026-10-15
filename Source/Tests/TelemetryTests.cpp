@@ -4,6 +4,7 @@
 #include "AdaptiveThresholds.h"
 #include "CpuMath.h"
 #include "ProcessMonitor.h"
+#include "ProcessSafety.h"
 #include "ThresholdTracker.h"
 
 #include <cmath>
@@ -298,6 +299,55 @@ void DetectsExitAndCrash() {
     CloseHandle(pi.hProcess);
 }
 
+// ---- Process safety classification ----
+
+void PathIsUnderChecks() {
+    Check(PathIsUnder(L"C:\\Windows\\System32\\svchost.exe", L"C:\\Windows"), __func__, "inside");
+    Check(PathIsUnder(L"c:\\windows\\explorer.exe", L"C:\\WINDOWS\\"), __func__, "case-insensitive");
+    Check(!PathIsUnder(L"C:\\WindowsApps\\x.exe", L"C:\\Windows"), __func__, "sibling folder is not inside");
+    Check(!PathIsUnder(L"C:\\Windows", L"C:\\Windows"), __func__, "the folder itself is not inside");
+    Check(!PathIsUnder(L"D:\\apps\\a.exe", L"C:\\Windows"), __func__, "other drive");
+}
+
+void ClassifiesEssentialNames() {
+    const std::vector<std::wstring> essential{L"svchost.exe", L"dwm.exe"};
+    Check(ClassifyProcess(4, L"System", essential).level == ProcessSafety::Essential, __func__,
+          "PID 4 is the kernel");
+    Check(ClassifyProcess(999999, L"DWM.EXE", essential).level == ProcessSafety::Essential, __func__,
+          "listed name, any case, is essential");
+    Check(ClassifyProcess(GetCurrentProcessId(), L"x.exe", {}).level == ProcessSafety::Essential,
+          __func__, "the current process is essential to itself");
+}
+
+void ClassifiesRealProcesses() {
+    // A program started from the Windows folder is a Windows component.
+    wchar_t cmd[] = L"cmd.exe /c ping -n 3 127.0.0.1 >nul";
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
+                        &si, &pi)) {
+        Check(false, __func__, "could not start cmd.exe");
+        return;
+    }
+    const SafetyInfo s = ClassifyProcess(pi.dwProcessId, L"cmd.exe", {});
+    Check(s.level == ProcessSafety::System, __func__, "cmd.exe from System32 is a Windows component");
+    Check(!s.imagePath.empty() && !s.reason.empty(), __func__, "path and reason filled in");
+    TerminateProcess(pi.hProcess, 0);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+
+    // An access-denied process (e.g. lsass/csrss when not elevated) is treated as system.
+    for (const auto& e : SnapshotProcesses()) {
+        if (CompareStringOrdinal(e.name.c_str(), -1, L"csrss.exe", -1, TRUE) == CSTR_EQUAL) {
+            const auto c = ClassifyProcess(e.pid, e.name, {});
+            Check(c.level == ProcessSafety::System || c.level == ProcessSafety::Service, __func__,
+                  "csrss.exe is never classified as a normal application");
+            break;
+        }
+    }
+    Check(std::string(SafetyName(ProcessSafety::Service)) == "service", __func__, "names");
+}
+
 }
 
 int main() {
@@ -329,6 +379,9 @@ int main() {
     FindsOwnProcessByName();
     TracksMissingThenRunningProcess();
     DetectsExitAndCrash();
+    PathIsUnderChecks();
+    ClassifiesEssentialNames();
+    ClassifiesRealProcesses();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

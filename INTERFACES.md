@@ -138,7 +138,7 @@ Note on the last row: a single transition out of `Suspended` back to `Normal` pe
 | `alert` | a batch process was suspended | `alert` (`batch_suspended`), `batch_process_id`, `batch_process_name`, `popup`, `webhook` |
 | `self_monitor` | every `telemetry.self_monitor_interval_seconds` | `cpu_percent` (of one core), `working_set_mb`, `private_mb`, `handle_count`, `managed_batch_processes`, `tracked_critical_names` |
 | `dashboard` | dashboard start or failure | `event` (`started`/`start_failed`), `url` or `error` |
-| `dashboard_action` | a role was changed from the dashboard | `action` (`set_role`), `process_name`, `role`, `config_sha256` |
+| `dashboard_action` | a role was changed from the dashboard | `action` (`set_role`), `process_name`, `role`, `confirmed_risk` (true when a safety warning was accepted), `config_sha256` |
 | `coordination` | controller connection events | `event` (`coordination_connected`, `coordination_disconnected`, `coordination_bias`, `coordination_command`, `coordination_rejected`, `coordination_error`), `detail` |
 
 The controller (`ThreadHaulController`) writes its own `controller.jsonl` using the same `log_type` + `timestamp` conventions. Its log kinds are `controller_started`, `agent_connected`, `agent_disconnected`, `agent_rejected`, `heartbeat`, `agent_event`, `cluster_bias`, `command_sent`, `command_result` and `controller_stopped`.
@@ -186,7 +186,7 @@ Validation (any failure stops startup with a message naming the field):
 - `processes.critical` and `processes.batch`: at least one entry each. Names are exact executable names (no paths, no wildcards), matched case-insensitively, and no name may be both critical and batch.
 - `logging.max_file_size_mb`: 1–1024. `logging.max_rotated_files`: 0–100.
 
-`processes.protected`: batch processes with these names are never throttled or suspended (`ActuatorManager::SetProtectedProcessNames`). The Actuator also always protects its own process and core Windows processes (`System`, `Registry`, `smss.exe`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe`, `lsass.exe`); config cannot remove those.
+`processes.protected`: batch processes with these names are never throttled or suspended (`ActuatorManager::SetProtectedProcessNames`). The Actuator also always protects its own process and core Windows processes, and config cannot remove those. The list (`ActuatorManager::AlwaysProtectedNames`) is: `System`, `Registry`, `smss.exe`, `csrss.exe`, `wininit.exe`, `winlogon.exe`, `services.exe`, `lsass.exe`, `svchost.exe`, `dwm.exe`, `fontdrvhost.exe`, `LsaIso.exe`, `Memory Compression` and `Secure System`.
 
 **Optional sections.** Each one can be left out entirely; the defaults are shown. Values are validated with the same rules: wrong type or out of range stops startup, naming the field.
 
@@ -231,6 +231,11 @@ Log rotation is size-based: when the next line would push the file past `max_fil
 - validates the result with `ParseConfig` before anything is written.
 
 The daemon writes the result with `ReplaceFileW`, which keeps the installed file's ACL, then applies it immediately through the normal hot-reload path.
+
+Before a role change to `critical`/`batch`, or a `throttle`/`suspend` command, the daemon classifies the matching running processes with `telemetry::ClassifyProcess` (`Source/Telemetry/ProcessSafety.h`). The levels are `essential`, `system`, `service` and `normal`.
+- `essential` is always refused.
+- `system` and `service` return `needs_confirmation: true` unless the request carries `"confirm": true`.
+- `/api/processes` reports `safety`, `safety_reason` and `path` for each process.
 
 The dashboard API (`Source/Daemon/Dashboard.h`) is described in README → *Web dashboard*. Every `/api/` request must carry `X-ThreadHaul-Token`. The token is per run and is returned only by the `dashboard` request on the control pipe; that request is not available to the controller or over HTTP.
 

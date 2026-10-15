@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "CpuMath.h"
+#include "ProcessSafety.h"
 
 namespace telemetry {
 
@@ -24,7 +25,12 @@ public:
         double       cpuPercent = 0.0;   // 100 = one logical core
         double       workingSetMb = 0.0;
         bool         accessible = true;  // false if OpenProcess was refused
+        SafetyInfo   safety;
     };
+
+    // Names that are always protected (from ActuatorManager), used to mark
+    // processes as Essential.
+    void SetEssentialNames(std::vector<std::wstring> names) { essential_ = std::move(names); }
 
     struct System {
         double cpuPercent = 0.0;         // whole machine, 0-100
@@ -45,6 +51,7 @@ private:
 
     std::mutex mutex_;
     std::map<DWORD, Prev> prev_;
+    std::vector<std::wstring> essential_;
     uint64_t lastIdle_ = 0;
     uint64_t lastTotal_ = 0;
 };

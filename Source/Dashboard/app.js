@@ -52,6 +52,31 @@
     toastTimer = setTimeout(() => t.classList.add("hidden"), 4000);
   }
 
+  // Promise-based confirmation dialog. Resolves true only on "Continue".
+  function confirmRisk(title, body, reason) {
+    return new Promise((resolve) => {
+      $("modal-title").textContent = title;
+      $("modal-body").textContent = body;
+      $("modal-reason").textContent = reason || "";
+      $("modal-reason").classList.toggle("hidden", !reason);
+      $("modal").classList.remove("hidden");
+      const done = (answer) => {
+        $("modal").classList.add("hidden");
+        $("modal-ok").onclick = $("modal-cancel").onclick = null;
+        document.removeEventListener("keydown", onKey);
+        resolve(answer);
+      };
+      const onKey = (e) => { if (e.key === "Escape") done(false); };
+      document.addEventListener("keydown", onKey);
+      $("modal-ok").onclick = () => done(true);
+      $("modal-cancel").onclick = () => done(false);
+      $("modal-cancel").focus();
+    });
+  }
+
+  const SAFETY_LABEL = { essential: "Essential", system: "System process", service: "Background service" };
+  const SAFETY_PHRASE = { system: "a system process (part of Windows, or protected by it)", service: "a background service" };
+
   async function api(path, body) {
     const opts = { headers: { "X-ThreadHaul-Token": token || "" }, cache: "no-store" };
     if (body !== undefined) {
@@ -88,9 +113,18 @@
     return b;
   };
 
-  async function command(verb, target) {
+  async function command(verb, target, confirmed) {
     try {
-      const r = await api("/api/command", { command: verb, target: String(target) });
+      const r = await api("/api/command", { command: verb, target: String(target), confirm: !!confirmed });
+      if (r.needs_confirmation) {
+        const ok = await confirmRisk(
+          `${verb[0].toUpperCase() + verb.slice(1)} ${SAFETY_PHRASE[r.safety] || "a system process"}?`,
+          `${target} is not an ordinary application. ${verb === "suspend" ? "Suspending" : "Throttling"} it may make ` +
+          "Windows or other programs unresponsive until it is resumed.",
+          r.message);
+        if (ok) return command(verb, target, true);
+        return;
+      }
       const detail = (r.results || []).map((x) => `${x.name} (${x.pid}): ${x.result}`).join("; ");
       toast(detail || r.message, !r.ok);
     } catch (e) {
@@ -309,9 +343,22 @@
     }
   }
 
-  async function setRole(name, role) {
+  async function setRole(name, role, confirmed) {
     try {
-      const r = await api("/api/role", { name, role });
+      const r = await api("/api/role", { name, role, confirm: !!confirmed });
+      if (r.needs_confirmation) {
+        const ok = await confirmRisk(
+          `Make ${name} a ${role} process?`,
+          role === "batch"
+            ? `${name} is ${SAFETY_PHRASE[r.safety] || "a system process"}. As a batch process it can be slowed down or ` +
+              "paused whenever a critical process is busy, which may make Windows or other programs unresponsive."
+            : `${name} is ${SAFETY_PHRASE[r.safety] || "a system process"}. As a critical process, other programs will ` +
+              "be slowed down whenever it is busy.",
+          r.message);
+        if (ok) return setRole(name, role, true);
+        refreshProcesses(true);
+        return;
+      }
       toast(r.message, !r.ok);
     } catch (e) {
       if (e.message !== "unauthorised") toast(e.message, true);
@@ -323,19 +370,31 @@
   function renderProcesses() {
     const q = $("proc-search").value.trim().toLowerCase();
     const roleFilter = $("proc-role-filter").value;
-    let rows = procs.filter((p) =>
-      (!q || p.name.toLowerCase().includes(q) || String(p.pid) === q) &&
-      (roleFilter === "all" || p.role === roleFilter));
+    const showSystem = $("proc-show-system").checked;
+    let hidden = 0;
+    let rows = procs.filter((p) => {
+      const risky = p.safety === "essential" || p.safety === "system";
+      // A Windows process that already has a role is always shown so it can be undone.
+      if (risky && !showSystem && p.role === "none") { hidden++; return false; }
+      return (!q || p.name.toLowerCase().includes(q) || String(p.pid) === q) &&
+        (roleFilter === "all" || p.role === roleFilter);
+    });
+    const SAFETY_ORDER = { normal: 0, service: 1, system: 2, essential: 3 };
     const k = procSort.key, d = procSort.dir;
     const val = (p) => k === "name" ? p.name.toLowerCase() : k === "pid" ? p.pid : k === "cpu" ? p.cpu_percent
-      : k === "mem" ? p.memory_mb : p.role;
+      : k === "mem" ? p.memory_mb : k === "safety" ? SAFETY_ORDER[p.safety] || 0 : p.role;
     rows.sort((a, b) => (val(a) < val(b) ? -1 : val(a) > val(b) ? 1 : 0) * d || a.pid - b.pid);
 
     const body = $("proc-body");
     body.replaceChildren();
     for (const p of rows) {
-      const tr = el("tr");
+      const tr = el("tr", p.safety && p.safety !== "normal" ? "row-" + p.safety : null);
       const name = el("td", null, p.name);
+      if (p.path) {
+        const path = el("span", "proc-path", p.path);
+        path.title = p.path;
+        name.appendChild(path);
+      }
       const pid = el("td", "num mono", p.pid);
       const cpu = el("td", "num");
       if (p.accessible) {
@@ -351,9 +410,18 @@
       }
       const mem = el("td", "num", p.accessible ? fmt1(p.memory_mb) + " MB" : "–");
 
+      const safetyCell = el("td");
+      if (p.safety && p.safety !== "normal") {
+        const b = el("span", "badge safety-" + p.safety, SAFETY_LABEL[p.safety]);
+        b.title = p.safety_reason || "";
+        safetyCell.appendChild(b);
+      }
+
       const roleCell = el("td");
       if (p.system_protected) {
-        roleCell.appendChild(el("span", "badge info", "system protected"));
+        const b = el("span", "badge safety-essential", "never managed");
+        b.title = p.safety_reason || "Essential to Windows";
+        roleCell.appendChild(b);
       } else {
         const sel = el("select", "role-select " + p.role);
         for (const [v, label] of [["none", "Unassigned"], ["critical", "Critical"], ["batch", "Batch"], ["protected", "Protected"]]) {
@@ -372,12 +440,16 @@
       const blocked = p.system_protected || p.role === "critical" || p.role === "protected";
       act.appendChild(actionButtons(p.pid, {
         disabled: blocked || !p.accessible,
-        reason: blocked ? "Critical and protected processes cannot be throttled" : "Access denied",
+        reason: p.system_protected ? "Essential to Windows: never managed"
+          : blocked ? "Critical and protected processes cannot be throttled" : "Access denied",
         only: p.state ? undefined : ["throttle", "suspend"],
       }));
-      tr.append(name, pid, cpu, mem, roleCell, stateCell, act);
+      tr.append(name, pid, cpu, mem, safetyCell, roleCell, stateCell, act);
       body.appendChild(tr);
     }
+    $("proc-hidden").textContent = hidden
+      ? `${hidden} Windows and system processes are hidden for safety. Tick “Show Windows & system processes” to see them.`
+      : "";
   }
 
   document.querySelectorAll("#proc-table th[data-sort]").forEach((th) => {
@@ -391,6 +463,7 @@
   });
   $("proc-search").addEventListener("input", renderProcesses);
   $("proc-role-filter").addEventListener("change", renderProcesses);
+  $("proc-show-system").addEventListener("change", renderProcesses);
 
   // ------------------------------------------------------------ log
   let logEntries = [];

@@ -209,7 +209,16 @@ The dashboard has three tabs.
    - **Unassigned** to stop managing it.
 3. The choice is saved to the settings file straight away and takes effect within a second. A role applies to every running copy of that program name.
 
-Windows system processes are marked **system protected** and cannot be assigned a role.
+To prevent accidental damage to Windows, every program is given a **safety level**:
+
+| Safety level | Meaning | What the dashboard does |
+|---|---|---|
+| **Essential** | Windows cannot run without it: kernel, session and logon processes, `svchost.exe`, `dwm.exe` and similar, plus the service itself | Shown with a red badge; it can never be given a role, throttled or suspended (the service also refuses it from the command line) |
+| **System process** | Its program file is inside the Windows folder, or Windows denies access to it | Hidden unless **Show Windows & system processes** is ticked, highlighted in amber, and a warning dialog must be confirmed before it is made critical or batch, throttled or suspended |
+| **Background service** | Runs as SYSTEM, LOCAL SERVICE or NETWORK SERVICE, or in the services session | Highlighted in blue, with the same confirmation |
+| *(no badge)* | An ordinary application | Managed without extra prompts |
+
+Marking any program **Protected** is always allowed, because that only stops the service from touching it.
 
 > To keep using the test programs from Step 5, leave `critical_simulator.exe` as **Critical** and `batch_simulator.exe` as **Batch**. That's how the installed settings start. To manage your real programs instead, change these roles, or set the two test programs to **Unassigned**.
 

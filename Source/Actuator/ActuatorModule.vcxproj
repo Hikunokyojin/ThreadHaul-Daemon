@@ -158,6 +158,7 @@
     <ClCompile Include="..\Daemon\HttpServer.cpp" />
     <ClCompile Include="..\Daemon\Dashboard.cpp" />
     <ClCompile Include="..\Telemetry\ProcessTable.cpp" />
+    <ClCompile Include="..\Telemetry\ProcessSafety.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ActuatorManager.h" />
@@ -180,6 +181,7 @@
     <ClInclude Include="..\Daemon\HttpServer.h" />
     <ClInclude Include="..\Daemon\Dashboard.h" />
     <ClInclude Include="..\Telemetry\ProcessTable.h" />
+    <ClInclude Include="..\Telemetry\ProcessSafety.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

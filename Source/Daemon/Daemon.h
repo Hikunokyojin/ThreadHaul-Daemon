@@ -19,6 +19,7 @@
 #include "EventLogWriter.h"
 #include "JsonLinesLogger.h"
 #include "ProcessMonitor.h"
+#include "ProcessSafety.h"
 #include "ThresholdTracker.h"
 
 namespace daemon {
@@ -56,7 +57,12 @@ public:
     // ---- Dashboard API (called from the dashboard's HTTP thread) ----
     std::string DashboardStatus();                 // status + config summary + system stats
     std::string ReadLog(long long offset);         // JSON Lines entries after a byte offset
-    std::string SetRole(const std::string& name, const std::string& role);
+    std::string SetRole(const std::string& name, const std::string& role, bool confirmed);
+
+    // Highest safety level among running processes that match `target`
+    // (a PID or an executable name), with the matching reason. Used to demand
+    // confirmation before managing Windows components and services.
+    telemetry::SafetyInfo SafetyOf(const std::string& target);
     std::string ProcessRolesJson();                // lower-cased role lists + managed states
 
 private:

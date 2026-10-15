@@ -656,7 +656,44 @@ std::string Daemon::ProcessRolesJson() {
     return j.dump();
 }
 
-std::string Daemon::SetRole(const std::string& name, const std::string& role) {
+telemetry::SafetyInfo Daemon::SafetyOf(const std::string& target) {
+    const auto essential = actuator::ActuatorManager::AlwaysProtectedNames();
+    telemetry::SafetyInfo worst;
+    const bool numeric = !target.empty() && std::all_of(target.begin(), target.end(), ::isdigit);
+    const std::wstring wname = Widen(target);
+    for (const telemetry::ProcessEntry& e : telemetry::SnapshotProcesses()) {
+        const bool match = numeric ? std::to_string(e.pid) == target : SameName(e.name, wname);
+        if (!match) continue;
+        const telemetry::SafetyInfo s = telemetry::ClassifyProcess(e.pid, e.name, essential);
+        if (static_cast<int>(s.level) > static_cast<int>(worst.level)) worst = s;
+    }
+    if (!numeric) {  // not running right now: still honour the essential list
+        for (const std::wstring& n : essential) {
+            if (SameName(n, wname)) {
+                worst.level = telemetry::ProcessSafety::Essential;
+                worst.reason = L"Essential to Windows: pausing or slowing it can freeze or crash the system.";
+            }
+        }
+    }
+    return worst;
+}
+
+std::string Daemon::SetRole(const std::string& name, const std::string& role, bool confirmed) {
+    // Safety check first (outside mutex_: it only reads the process list).
+    if (role == "critical" || role == "batch") {
+        const telemetry::SafetyInfo safety = SafetyOf(name);
+        if (safety.level == telemetry::ProcessSafety::Essential) {
+            return Reply(false, name + " is essential to Windows and can never be managed. " +
+                                    Narrow(safety.reason))
+                .dump();
+        }
+        if (safety.level != telemetry::ProcessSafety::Normal && !confirmed) {
+            ordered_json j = Reply(false, Narrow(safety.reason));
+            j["needs_confirmation"] = true;
+            j["safety"] = telemetry::SafetyName(safety.level);
+            return j.dump();
+        }
+    }
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     std::ifstream in(std::filesystem::path(configPath_), std::ios::binary);
     if (!in) {
@@ -693,6 +730,7 @@ std::string Daemon::SetRole(const std::string& name, const std::string& role) {
     Log("dashboard_action", ordered_json{{"action", "set_role"},
                                          {"process_name", name},
                                          {"role", role},
+                                         {"confirmed_risk", confirmed},
                                          {"config_sha256", Sha256File(configPath_)}});
     CheckConfigReload();  // apply now rather than on the next poll
     return Reply(true, role == "none" ? name + " is no longer monitored"

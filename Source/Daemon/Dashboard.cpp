@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "ActuatorManager.h"
 #include "Daemon.h"
 
 namespace daemon {
@@ -63,6 +64,7 @@ Dashboard::Dashboard(Daemon& daemon) : daemon_(daemon), token_(RandomToken()) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     root_ = (std::filesystem::path(exe).parent_path() / L"dashboard").wstring();
+    table_.SetEssentialNames(actuator::ActuatorManager::AlwaysProtectedNames());
     telemetry::ProcessTable::System primed;
     table_.Sample(primed);  // first sample sets the baseline for CPU deltas
 }
@@ -156,9 +158,20 @@ HttpResponse Dashboard::Handle(const HttpRequest& req) {
             if (target.empty() || target.find_first_of(" \t\r\n") != std::string::npos) {
                 return Error(400, "target must be a PID or an executable name");
             }
+            if (verb != "release" && verb != "resume" && !body.value("confirm", false)) {
+                const telemetry::SafetyInfo s = daemon_.SafetyOf(target);
+                if (s.level == telemetry::ProcessSafety::System ||
+                    s.level == telemetry::ProcessSafety::Service) {
+                    return Json(200, json{{"ok", false},
+                                          {"needs_confirmation", true},
+                                          {"safety", telemetry::SafetyName(s.level)},
+                                          {"message", Narrow(s.reason)}});
+                }
+            }
             r.body = daemon_.HandleCommand(verb + " " + target);
         } else {
-            r.body = daemon_.SetRole(body.value("name", ""), body.value("role", ""));
+            r.body = daemon_.SetRole(body.value("name", ""), body.value("role", ""),
+                                     body.value("confirm", false));
         }
         return r;
     }
@@ -231,8 +244,11 @@ HttpResponse Dashboard::Processes() {
                         {"accessible", r.accessible},
                         {"role", role},
                         {"state", roles["states"].value(std::to_string(r.pid), "")},
-                        {"system_protected", inList(roles["builtin_protected"], key) ||
-                                                 r.pid == GetCurrentProcessId()}});
+                        {"safety", telemetry::SafetyName(r.safety.level)},
+                        {"safety_reason", Narrow(r.safety.reason)},
+                        {"path", Narrow(r.safety.imagePath)},
+                        {"system_protected", r.safety.level == telemetry::ProcessSafety::Essential ||
+                                                 inList(roles["builtin_protected"], key)}});
     }
     return Json(200, json{{"ok", true},
                           {"system", {{"cpu_percent", static_cast<long long>(sys.cpuPercent * 10 + 0.5) / 10.0},

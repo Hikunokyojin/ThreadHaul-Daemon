@@ -48,6 +48,7 @@ std::vector<ProcessTable::Row> ProcessTable::Sample(System& system) {
         if (e.pid == 0) {  // System Idle Process: not a real process
             continue;
         }
+        r.safety = ClassifyProcess(e.pid, e.name, essential_);
         HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, e.pid);
         if (h == nullptr) {
             r.accessible = false;

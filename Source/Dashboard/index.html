@@ -122,6 +122,7 @@
               <option value="protected">Protected</option>
               <option value="none">Unassigned</option>
             </select>
+            <label class="check"><input type="checkbox" id="proc-show-system"> Show Windows &amp; system processes</label>
             <label class="check"><input type="checkbox" id="proc-pause"> Pause updates</label>
           </div>
         </div>
@@ -131,6 +132,11 @@
           <strong>protected</strong> programs are never touched. Roles apply to every process with that name and are saved to the
           configuration immediately.
         </p>
+        <div class="safety-legend">
+          <span><span class="badge safety-essential">Essential</span> Windows cannot run without it. It can never be managed.</span>
+          <span><span class="badge safety-system">System process</span> Part of Windows, or a process Windows protects from inspection. Hidden unless you choose to show it; managing it asks for confirmation.</span>
+          <span><span class="badge safety-service">Background service</span> Runs as a system account. Other programs may depend on it; managing it asks for confirmation.</span>
+        </div>
         <div class="table-wrap">
           <table class="table sortable" id="proc-table">
             <thead>
@@ -139,6 +145,7 @@
                 <th data-sort="pid" class="num">PID</th>
                 <th data-sort="cpu" class="num sorted-desc">CPU %</th>
                 <th data-sort="mem" class="num">Memory</th>
+                <th data-sort="safety">Safety</th>
                 <th data-sort="role">Role</th>
                 <th>State</th>
                 <th class="actions-col">Actions</th>
@@ -147,6 +154,7 @@
             <tbody id="proc-body"></tbody>
           </table>
         </div>
+        <p class="muted small-note" id="proc-hidden"></p>
         <p class="muted small-note" id="proc-footer">&nbsp;</p>
       </div>
     </section>
@@ -180,5 +188,17 @@
   </main>
 
   <div id="toast" class="toast hidden" role="status"></div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <h2 id="modal-title">Are you sure?</h2>
+      <p id="modal-body"></p>
+      <p class="modal-reason" id="modal-reason"></p>
+      <div class="modal-actions">
+        <button class="btn" id="modal-cancel">Cancel</button>
+        <button class="btn btn-danger-solid" id="modal-ok">Continue</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
