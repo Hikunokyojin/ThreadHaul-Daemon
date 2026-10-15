@@ -35,9 +35,25 @@ public:
     // section 2 for why.
     void OnThresholdEvent(const ThresholdEvent& evt);
 
-    void UpdateAll(double criticalProcessCpuPercent);
+    // Returns true if any managed process changed state on this sample.
+    bool UpdateAll(double criticalProcessCpuPercent);
 
     void ForceRecoverAllForShutdown();
+
+    // Applies new thresholds to every managed process and to any added later.
+    void SetConfig(const StateMachineConfig& config);
+    const StateMachineConfig& Config() const { return config_; }
+
+    // Manual override (CLI). Returns nullptr if the PID is not managed.
+    // ForceState holds the process in newState until ReleaseManualHold.
+    ProcessStateMachine* Find(DWORD processId);
+    bool ForceState(DWORD processId, ProcessState newState, double cpuPercent, bool hold);
+    bool ReleaseManualHold(DWORD processId);
+
+    template <typename Fn>
+    void ForEach(Fn fn) const {
+        for (const auto& [pid, machine] : machines_) fn(*machine);
+    }
 
     size_t ManagedCount() const { return machines_.size(); }
 

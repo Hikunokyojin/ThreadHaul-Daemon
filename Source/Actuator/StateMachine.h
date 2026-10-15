@@ -51,6 +51,19 @@ public:
     bool Update(double criticalProcessCpuPercent);
     void ForceRecoverForShutdown();
 
+    // Replaces the thresholds (config hot-reload, adaptive adjustment).
+    // Consecutive-sample counters are kept so a reload does not reset a
+    // trigger that is already in progress.
+    void SetConfig(const StateMachineConfig& config) { config_ = config; }
+    const StateMachineConfig& Config() const { return config_; }
+
+    // Manual override (CLI). Moves straight to newState, performing the same
+    // OS calls as an automatic transition. While held, Update() still counts
+    // samples but never changes state; ReleaseManualHold() hands control back.
+    void ForceState(ProcessState newState, double cpuPercent, bool hold);
+    void ReleaseManualHold() { manualHold_ = false; }
+    bool IsManuallyHeld() const { return manualHold_; }
+
     // True once the managed process has exited. While we hold a handle to it
     // Windows cannot recycle its PID, so false also means the PID still refers
     // to the process we started managing. If the handle could not be opened at
@@ -71,6 +84,7 @@ private:
     TransitionCallback onTransition_;
 
     ProcessState state_ = ProcessState::Normal;
+    bool manualHold_ = false;
 
     int consecutiveHigh_ = 0;
     int consecutiveCritical_ = 0;

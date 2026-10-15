@@ -74,21 +74,54 @@ void ActuatorManager::OnThresholdEvent(const ThresholdEvent& evt) {
     UpdateAll(evt.observedCpuPercent);
 }
 
-void ActuatorManager::UpdateAll(double criticalProcessCpuPercent) {
+bool ActuatorManager::UpdateAll(double criticalProcessCpuPercent) {
+    bool changed = false;
     for (auto it = machines_.begin(); it != machines_.end();) {
         if (it->second->HasExited()) {
             it = machines_.erase(it);
             continue;
         }
-        it->second->Update(criticalProcessCpuPercent);
+        changed = it->second->Update(criticalProcessCpuPercent) || changed;
         ++it;
     }
+    return changed;
 }
 
 void ActuatorManager::ForceRecoverAllForShutdown() {
     for (auto& [pid, machine] : machines_) {
         machine->ForceRecoverForShutdown();
     }
+}
+
+void ActuatorManager::SetConfig(const StateMachineConfig& config) {
+    config_ = config;
+    for (auto& [pid, machine] : machines_) {
+        machine->SetConfig(config);
+    }
+}
+
+ProcessStateMachine* ActuatorManager::Find(DWORD processId) {
+    const auto it = machines_.find(processId);
+    return it == machines_.end() ? nullptr : it->second.get();
+}
+
+bool ActuatorManager::ForceState(DWORD processId, ProcessState newState, double cpuPercent,
+                                 bool hold) {
+    ProcessStateMachine* machine = Find(processId);
+    if (machine == nullptr) {
+        return false;
+    }
+    machine->ForceState(newState, cpuPercent, hold);
+    return true;
+}
+
+bool ActuatorManager::ReleaseManualHold(DWORD processId) {
+    ProcessStateMachine* machine = Find(processId);
+    if (machine == nullptr) {
+        return false;
+    }
+    machine->ReleaseManualHold();
+    return true;
 }
 
 }

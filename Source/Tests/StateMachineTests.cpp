@@ -201,6 +201,71 @@ void ManagerForwardsThresholdEvents() {
           "3 events at 90% throttle the managed batch process");
 }
 
+void ManualHoldBlocksAutomaticTransitions() {
+    Recorder r;
+    ProcessStateMachine m(L"batch.exe", kFakePid, {}, r.Callback());
+    m.ForceState(ProcessState::Suspended, 10.0, true);
+    Check(m.CurrentState() == ProcessState::Suspended, __func__, "forced straight to Suspended");
+    Check(m.IsManuallyHeld(), __func__, "hold flag set");
+    Feed(m, {10, 10, 10, 10, 10, 10});
+    Check(m.CurrentState() == ProcessState::Suspended, __func__, "low samples ignored while held");
+    m.ReleaseManualHold();
+    Feed(m, {10, 10, 10, 10, 10});
+    Check(m.CurrentState() == ProcessState::Normal, __func__, "recovers after release");
+}
+
+void ForceStateFromAnyState() {
+    Recorder r;
+    ProcessStateMachine m(L"batch.exe", kFakePid, {}, r.Callback());
+    m.ForceState(ProcessState::Throttled, 0, true);
+    m.ForceState(ProcessState::Suspended, 0, true);
+    m.ForceState(ProcessState::Throttled, 0, true);
+    m.ForceState(ProcessState::Normal, 0, false);
+    Check(r.log.size() == 4, __func__, "four forced transitions recorded");
+    Check(r.log.size() == 4 && r.log[2].from == ProcessState::Suspended &&
+              r.log[2].to == ProcessState::Throttled,
+          __func__, "Suspended -> Throttled allowed manually");
+    m.ForceState(ProcessState::Normal, 0, false);
+    Check(r.log.size() == 4, __func__, "forcing the current state is a no-op");
+}
+
+void SetConfigKeepsCounters() {
+    ProcessStateMachine m(L"batch.exe", kFakePid, {});
+    Feed(m, {82, 82});
+    StateMachineConfig lower;
+    lower.throttleThresholdPercent = 80;
+    m.SetConfig(lower);
+    m.Update(82);
+    Check(m.CurrentState() == ProcessState::Normal, __func__,
+          "samples below the old threshold were not counted retroactively");
+    Feed(m, {82, 82});
+    Check(m.CurrentState() == ProcessState::Throttled, __func__, "new threshold applies");
+}
+
+void ManagerSetConfigAndForce() {
+    Recorder r;
+    ActuatorManager mgr({}, r.Callback());
+    mgr.AddBatchProcess(L"batch.exe", kFakePid);
+    StateMachineConfig c;
+    c.throttleConsecutiveSamples = 1;
+    mgr.SetConfig(c);
+    mgr.UpdateAll(86);
+    Check(r.log.size() == 1, __func__, "manager pushes config to existing machines");
+    Check(mgr.ForceState(kFakePid, ProcessState::Normal, 0, true), __func__, "force on managed pid");
+    Check(!mgr.ForceState(12345678, ProcessState::Normal, 0, true), __func__, "unknown pid refused");
+    Check(mgr.Find(kFakePid)->IsManuallyHeld(), __func__, "held");
+    Check(mgr.ReleaseManualHold(kFakePid) && !mgr.Find(kFakePid)->IsManuallyHeld(), __func__, "released");
+}
+
+void ProtectedProcessesNeverManaged() {
+    ActuatorManager mgr({});
+    mgr.SetProtectedProcessNames({L"explorer.exe"});
+    Check(!mgr.AddBatchProcess(L"EXPLORER.EXE", kFakePid), __func__, "configured name, any case");
+    Check(!mgr.AddBatchProcess(L"csrss.exe", kFakePid), __func__, "built-in protection");
+    Check(!mgr.AddBatchProcess(L"batch.exe", GetCurrentProcessId()), __func__, "own process");
+    Check(mgr.ManagedCount() == 0, __func__, "nothing managed");
+}
+
 }
 
 int main() {
@@ -219,6 +284,11 @@ int main() {
     DetectsExitOfRealProcess();
     CustomConfigIsRespected();
     ManagerForwardsThresholdEvents();
+    ManualHoldBlocksAutomaticTransitions();
+    ForceStateFromAnyState();
+    SetConfigKeepsCounters();
+    ManagerSetConfigAndForce();
+    ProtectedProcessesNeverManaged();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

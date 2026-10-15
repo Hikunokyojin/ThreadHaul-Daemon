@@ -49,6 +49,10 @@ bool ProcessStateMachine::Update(double criticalProcessCpuPercent) {
         consecutiveLow_ = 0;
     }
 
+    if (manualHold_) {
+        return false;
+    }
+
     // --- state transitions ---
     if (state_ == ProcessState::Normal &&
         consecutiveHigh_ >= config_.throttleConsecutiveSamples) {
@@ -75,11 +79,17 @@ void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent)
         actuationSucceeded = false;
     } else {
         switch (newState) {
-            case ProcessState::Throttled:
+            case ProcessState::Throttled: {
+                // Suspended -> Throttled only happens through a manual override.
+                bool resumed = true;
+                if (oldState == ProcessState::Suspended) {
+                    resumed = ResumeAllThreads(batchProcessId_).AllSucceeded();
+                }
                 actuationSucceeded =
-                    SetProcessPriority(batchProcessId_, PriorityLevel::Idle) ==
-                    PriorityChangeResult::Success;
+                    resumed && SetProcessPriority(batchProcessId_, PriorityLevel::Idle) ==
+                                   PriorityChangeResult::Success;
                 break;
+            }
 
             case ProcessState::Suspended:
                 actuationSucceeded = SuspendAllThreads(batchProcessId_).AllSucceeded();
@@ -111,7 +121,15 @@ void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent)
     }
 }
 
+void ProcessStateMachine::ForceState(ProcessState newState, double cpuPercent, bool hold) {
+    manualHold_ = hold;
+    if (state_ != newState) {
+        TransitionTo(newState, cpuPercent);
+    }
+}
+
 void ProcessStateMachine::ForceRecoverForShutdown() {
+    manualHold_ = false;
     if (state_ == ProcessState::Normal) {
         return;
     }
