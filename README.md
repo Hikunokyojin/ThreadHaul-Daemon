@@ -12,6 +12,15 @@ Every threshold, process name and interval comes from `config.json` and can be c
 
 Team / module owners: Divik (Actuator), Prakul (Telemetry), Pranav (Config / Logging / Integration). Cross-module contracts are in [INTERFACES.md](INTERFACES.md). The specification is [specs/logistics-resource-monitor.md](specs/logistics-resource-monitor.md).
 
+**Documentation:**
+
+| Document | Read it to |
+|---|---|
+| [RUNNING.md](RUNNING.md) | Build, install, demonstrate and remove the service, step by step (start here if you are new) |
+| [Source/Docs/ModuleGuides/](Source/Docs/ModuleGuides/) | Understand one module in depth: one PDF per team member covering its files, Windows APIs, functions and review questions. Regenerate them with `python Source\Docs\module_guides.py`. |
+| [Source/Docs/literature-review.md](Source/Docs/literature-review.md) | See the research behind the design decisions |
+| [INTERFACES.md](INTERFACES.md) | Look up the event struct, log schema and config schema shared between modules |
+
 ---
 
 ## Repository layout
@@ -220,7 +229,12 @@ The full reasoning is in [Source/Docs/literature-review.md](Source/Docs/literatu
 
 ## Verification status
 
-Verified in a non-elevated session (Windows 11, 16 logical cores):
+**As an installed Windows Service** (Administrator, Windows 11):
+- `install.ps1` validated the config, installed the program and config, locked the config down, registered the event source, and created and started the service (Automatic start, LocalSystem).
+- The service answered `status` over the control pipe.
+- The test programs produced the full throttle → suspend → recover cycle, with Event Log entries and the suspension pop-up.
+
+**In console mode** (non-elevated session, Windows 11, 16 logical cores):
 - All 189 unit-test checks pass.
 - Both build paths compile with no compiler warnings.
 - The full console-mode scenario ran:
@@ -233,8 +247,7 @@ Verified in a non-elevated session (Windows 11, 16 logical cores):
   - adaptive throttling ahead of the static threshold.
 
 **Not yet verified:**
-- `install.ps1` and `uninstall.ps1` need an elevated shell. They pass a PowerShell syntax check but haven't been run.
-- Running under the Service Control Manager, Event Log output, and the popup alert haven't been exercised.
-- Run the installer as Administrator and repeat the demo against the service before calling it done.
+- `uninstall.ps1` passes a PowerShell syntax check but hasn't been confirmed end to end.
+- The installer's `-Account LocalService` option hasn't been tried.
 
 On machines with Smart App Control turned on, freshly built unsigned executables may occasionally be blocked ("An Application Control policy has blocked this file"). Re-running usually works, or the binaries can be code-signed.
