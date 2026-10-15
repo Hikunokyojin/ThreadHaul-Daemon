@@ -1,260 +1,364 @@
-# Running ThreadHaul-Daemon: Step-by-Step Guide
+# ThreadHaul-Daemon: Installation and Operation Guide
 
-This guide covers how to build, test, run, demo, install and remove the daemon. For what the project is and why it was designed this way, see [README.md](README.md).
+This guide takes you from a fresh copy of the project to a running Windows Service, and shows you how to confirm it works, operate it and remove it. You don't need to know how the project works internally; follow the steps in order.
 
-All commands are run from the repository folder (`ThreadHaul-Daemon\`) unless a step says otherwise.
+For background on the design, see [README.md](README.md).
 
 ---
 
-## 0. One-time setup
+## What this software does
 
-| Need | How to get it | Check |
+ThreadHaul-Daemon runs in the background as a Windows Service. It watches two kinds of programs:
+
+- **Critical programs:** work that must stay fast, such as a real-time dispatch system.
+- **Batch programs:** work that can wait, such as invoice generation.
+
+When a critical program is short of CPU, the service slows the batch programs down. If that isn't enough, it pauses them. When the pressure is gone, it restores them. Every decision is recorded in a log file and in the Windows Event Log.
+
+The project includes two small test programs that play these roles, so you can see it work without any real system:
+
+| Test program | Plays the role of | Behaviour |
 |---|---|---|
-| Windows 10/11 or Windows Server 2016+ | | |
-| Visual Studio 2019+ with the **Desktop development with C++** workload | Visual Studio Installer | `build.cmd` finds it automatically |
-| Python 3 + matplotlib (only for graphs) | `pip install matplotlib` | `python -c "import matplotlib"` |
-| Administrator rights (only to install the service) | Right-click PowerShell → *Run as administrator* | |
+| `critical_simulator.exe` | the critical program | Repeats a cycle of light load, then full load, then light load |
+| `batch_simulator.exe` | the batch program | Uses CPU continuously and prints its progress every second |
 
 ---
 
-## 1. Build
+## Before you begin
 
-```bat
-build.cmd
-```
+### Requirements
 
-Expected ending: `Build OK -> ...\build`. Everything lands in `build\`:
+| Requirement | Notes |
+|---|---|
+| Windows 10, Windows 11 or Windows Server 2016 or later | 64-bit |
+| Administrator rights on the computer | Needed to install a Windows Service |
+| Visual Studio 2019 or later, with the **Desktop development with C++** workload | Needed once, to compile the program. The free Community edition is fine. In the Visual Studio Installer, choose *Modify* and tick *Desktop development with C++*. |
+| Python 3 (optional) | Only needed for the graph in Step 8 |
 
-```
-ThreadHaulDaemon.exe        the monitor (service + console mode + CLI)
-ThreadHaulController.exe    central controller for several servers
-critical_simulator.exe      fake "dispatch API" that burns CPU on a schedule
-batch_simulator.exe         fake "invoice job" that burns CPU all the time
-*Tests.exe                  unit tests
-config.json                 copy of Source\Config\config.json
-```
+### Open an Administrator PowerShell window
 
-If the build fails, the compiler output is in `build\build.log`.
+1. Open the **Start** menu and type `PowerShell`.
+2. Right-click **Windows PowerShell** and choose **Run as administrator**.
+3. Click **Yes** when Windows asks for permission.
 
-## 2. Run the unit tests
+The window title should begin with **Administrator:**. Use this window for every step unless a step tells you otherwise.
 
-```bat
-build.cmd test
-```
+### Go to the project folder
 
-Expected: three suites, each ending `... checks, 0 failed`. The exit code is 0 only if all pass.
+Every command in this guide is written to run from the **project folder**: the folder that contains `build.cmd`, `README.md` and the `Source` folder.
 
-## 3. Check a config file
-
-```bat
-build\ThreadHaulDaemon.exe validate-config Source\Config\config.json
-```
-
-The command prints either `OK: ... is valid.` or `INVALID: <field> <reason>`. The daemon uses the same check at startup and on every hot-reload.
-
----
-
-## 4. Demo in console mode (no install needed)
-
-Console mode runs the daemon in a terminal window. It behaves exactly like the service, so it's the easiest way to show the system working.
-
-### 4.1 Prepare a demo config
-
-`build\config.json` writes its log to `C:\ProgramData\ThreadHaulDaemon\logs\`, which needs admin rights. For a non-admin demo, edit `build\config.json` and set:
-
-```json
-"log_path": "demo.jsonl"
-```
-
-A relative path is resolved from the folder you start the daemon in.
-
-### 4.2 Start the three programs
-
-Open **three terminals** in `build\`.
-
-**Terminal 1: the daemon**
-```bat
-ThreadHaulDaemon.exe --console --config config.json --allow-unelevated
-```
-- `--allow-unelevated` lets it run without admin, managing only processes you own. Leave it out when running as Administrator.
-
-**Terminal 2: the batch job**
-```bat
-batch_simulator.exe --threads 2
-```
-It prints `units/s` and its current priority every second.
-
-**Terminal 3: the critical app**
-```bat
-critical_simulator.exe
-```
-The default schedule repeats: 8 s at 30% → 20 s at 100% → 15 s at 20%.
-
-### 4.3 What you should see
-
-| Time in the 100% phase | Daemon decision | Visible in batch_simulator |
-|---|---|---|
-| 3rd second ≥ 85% | **throttle**: priority → IDLE | `priority IDLE` |
-| 5 more seconds ≥ 90% | **suspend** all threads | output **stops** |
-| 5 seconds < 60% (after the phase ends) | **recover**: resume + NORMAL | `<- resumed after a pause`, `priority NORMAL` |
-
-Check the live state at any time from a fourth terminal:
-```bat
-ThreadHaulDaemon.exe status
-```
-
-### 4.4 Try the manual override (CLI)
-
-```bat
-ThreadHaulDaemon.exe suspend batch_simulator.exe
-ThreadHaulDaemon.exe status
-ThreadHaulDaemon.exe resume batch_simulator.exe
-ThreadHaulDaemon.exe release batch_simulator.exe
-ThreadHaulDaemon.exe suspend explorer.exe
-```
-- `suspend` freezes the batch job immediately. The process is held: the state machine won't touch it.
-- `status` shows `"state":"suspended","manual_hold":true`.
-- `resume` restores it to normal priority and keeps holding it.
-- `release` hands it back to automatic control.
-- `suspend explorer.exe` is **refused**, because explorer.exe is on the protection list.
-
-### 4.5 Try hot-reload
-
-While everything is running, edit `config.json`:
-- Change `"high": { "percent": 85` to `70` and save. The log gets a `config_reload` entry with `"success": true`, and the new threshold applies on the next second.
-- Set `"low"` to `95` (invalid, because low must be below high) and save. The terminal prints `config reload rejected: thresholds.low.percent must be below thresholds.high.percent`, and the daemon keeps the last good config.
-
-### 4.6 Try crash and restart handling
-
-Close the critical simulator and run:
-```bat
-critical_simulator.exe --load 100 --crash-after 10
-```
-- After 10 s it exits with code 3, and the log records `"event":"crashed","exit_code":3`.
-- Start it again, and the log records `"event":"restarted"` with `previous_process_id`.
-
-### 4.7 Try adaptive (predictive) thresholds
-
-In `config.json` set `"adaptive": { "enabled": true, "window_samples": 5, "horizon_samples": 3, "max_adjust_percent": 10 }`, then run:
-```bat
-critical_simulator.exe --schedule 3:20,1:40,1:55,1:68,1:78,12:84 --once
-```
-While the load ramps up, the log shows `adaptive_threshold` with `high_percent` falling below 85. The batch job is throttled before the static rule would have acted.
-
-### 4.8 Stop cleanly
-
-```bat
-ThreadHaulDaemon.exe stop
-```
-Pressing Ctrl+C in Terminal 1 does the same. Any suspended or throttled process is resumed and restored to NORMAL before the daemon exits.
-
-### 4.9 Graph the run
-
-```bat
-python ..\Source\Scripts\log_viewer.py demo.jsonl --out demo.png
-```
-
-The script prints a table of every state change and the daemon's own CPU/memory, then saves `demo.png` with three panels:
-- critical CPU against the thresholds;
-- each batch process's state over time (triangles mark manual overrides);
-- the daemon's own resource use.
-
----
-
-## 5. Install as a real Windows Service
-
-Open PowerShell **as Administrator** in the repository folder:
+Run the following, replacing the path with wherever the project is on your computer. Keep the quotation marks, because the path contains spaces.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File Source\Scripts\install.ps1
+Set-Location "C:\Claude Cowork\Projects\ThreadHaul-Daemon\ThreadHaul-Daemon"
 ```
 
-What it does, in order:
-1. Validates `Source\Config\config.json`. It stops if the config is invalid.
-2. Removes any older installation, which stops cleanly and restores processes.
-3. Copies the exe to `C:\Program Files\ThreadHaulDaemon\`.
-4. Copies the config to `C:\ProgramData\ThreadHaulDaemon\config.json`. An existing config is kept unless you pass `-OverwriteConfig`.
-5. Locks the config so only SYSTEM and Administrators can change it.
-6. Registers the `ThreadHaulDaemon` event-log source.
-7. Creates the service: automatic start, restart on failure, minimal privileges.
-8. Starts it.
+Confirm you're in the right place:
 
-Options:
-- `-Account LocalService`: lower-privilege account. It can only manage processes that also run as LocalService.
-- `-OverwriteConfig`: replace an installed config.json.
-- `-NoStart`: install but don't start.
+```powershell
+Test-Path .\build.cmd
+```
 
-### 5.1 Check the service
+This must print `True`. If it prints `False`, you're in the wrong folder; repeat the `Set-Location` command with the correct path.
+
+> **Important:** if you open a new PowerShell window at any point, run the `Set-Location` command in it first. Most "file not found" errors come from running a command in the wrong folder.
+
+---
+
+## Step 1: Build the program
+
+```powershell
+.\build.cmd
+```
+
+This takes about a minute. It finishes with:
+
+```
+Build OK -> ...\build
+```
+
+The compiled programs are now in the `build` folder. If you see `BUILD FAILED`, the full compiler output is in `build\build.log`. If you see `Visual Studio not found`, install the C++ workload described in *Requirements*.
+
+## Step 2: Run the self-tests (recommended)
+
+```powershell
+.\build.cmd test
+```
+
+Three test groups run. Each must end with `0 failed`, for example:
+
+```
+[StateMachineTests]
+50 checks, 0 failed
+```
+
+If any test fails, stop here and report the output to the project team.
+
+## Step 3: Install the service
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Source\Scripts\install.ps1
+```
+
+The installer prints each action as it completes:
+
+```
+OK: ...\Source\Config\config.json is valid.
+Installing binaries to C:\Program Files\ThreadHaulDaemon
+Installed config: C:\ProgramData\ThreadHaulDaemon\config.json
+Config locked to SYSTEM + Administrators (write), service account (read).
+Registered event-log source ThreadHaulDaemon (Application log).
+Service 'ThreadHaulDaemon' created (auto start, account LocalSystem).
+
+Name             Status  StartType
+ThreadHaulDaemon Running Automatic
+```
+
+What the installer has set up:
+
+| Item | Location |
+|---|---|
+| Program | `C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe` |
+| Settings file | `C:\ProgramData\ThreadHaulDaemon\config.json` |
+| Log file | `C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl` |
+| Windows Service | **ThreadHaul Resource Monitor**: starts automatically with Windows |
+
+If the service was installed before, running the installer again replaces the program and keeps your existing settings file.
+
+## Step 4: Confirm the service is running
 
 ```powershell
 Get-Service ThreadHaulDaemon
+```
+
+**Status** must be `Running`.
+
+Next, ask the service for its current state:
+
+```powershell
 & "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" status
-Get-Content C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl -Tail 5
 ```
-- `Get-Service` should show Status Running, StartType Automatic.
-- `status` prints a JSON line with the current pressure and thresholds.
-- The log tail shows the most recent entries.
 
-Then run the two simulators from `build\` (section 4.2). Watch for:
-- **Event Viewer** → Windows Logs → Application, source **ThreadHaulDaemon**. Event IDs: 1000 throttled, 1001 suspended, 1002 recovered.
-- A **popup** on your desktop when the batch job is suspended.
+It replies with one line of data that starts with `{"ok":true,...`. At this point the `critical` and `batch` lists are empty (`[]`), because neither test program is running yet. That's expected.
 
-### 5.2 Change settings on an installed service
+## Step 5: Demonstrate the service with the test programs
 
-Edit `C:\ProgramData\ThreadHaulDaemon\config.json` in an editor started **as Administrator**. Saving applies the changes, with no restart needed. To be able to run the simulators from `build\`, the names in `processes` must match: `critical_simulator.exe` and `batch_simulator.exe` by default.
+You'll need **two additional PowerShell windows**. These don't need administrator rights: open them from the Start menu normally.
 
-### 5.3 Start, stop and restart
+**Window 2: start the batch program**
 
 ```powershell
-Stop-Service ThreadHaulDaemon      # resumes and restores everything first
-Start-Service ThreadHaulDaemon
-Restart-Service ThreadHaulDaemon
+Set-Location "C:\Claude Cowork\Projects\ThreadHaul-Daemon\ThreadHaul-Daemon"
+.\build\batch_simulator.exe --threads 2
 ```
 
-### 5.4 Uninstall
+It prints a line every second, for example:
+
+```
+[batch] 168154553 units/s  priority NORMAL
+```
+
+**Window 3: start the critical program**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File Source\Scripts\uninstall.ps1
-powershell -ExecutionPolicy Bypass -File Source\Scripts\uninstall.ps1 -RemoveData
-```
-- The first command keeps the config and logs.
-- The second also deletes `C:\ProgramData\ThreadHaulDaemon`.
-
----
-
-## 6. Multi-server mode (optional)
-
-On the controller machine:
-```bat
-build\ThreadHaulController.exe --port 7878 --token mysecret --pressure 85 --cluster-percent 50 --bias 5
+Set-Location "C:\Claude Cowork\Projects\ThreadHaul-Daemon\ThreadHaul-Daemon"
+.\build\critical_simulator.exe
 ```
 
-On every dispatch server, in config.json:
-```json
-"coordination": { "enabled": true, "controller_host": "<controller-ip>", "controller_port": 7878, "shared_token": "mysecret", "heartbeat_seconds": 5 }
+It runs a repeating 43-second cycle: 8 seconds of light load, 20 seconds of full load, then 15 seconds of light load. Each phase change is announced, for example `load 100% for 20 s`.
+
+**What to watch in Window 2** once the critical program reaches 100%:
+
+| When | What the service does | What you see in Window 2 |
+|---|---|---|
+| After about 3 seconds of full load | **Throttles** the batch program: lowers its priority | The line changes to `priority IDLE` |
+| After about 5 more seconds | **Suspends** the batch program: pauses it completely | The output **stops**. A warning pop-up appears on screen. |
+| About 5 seconds after the load drops | **Restores** the batch program | Output resumes with `<- resumed after a pause` and `priority NORMAL` |
+
+The cycle repeats, so you can watch it as many times as you like.
+
+> On a computer with many CPU cores the batch program may not visibly slow down while throttled, because there is enough spare CPU for both programs. The change to `priority IDLE` and the complete pause during suspension are the reliable signs.
+
+## Step 6: Observe what the service is doing
+
+Run these in the **Administrator window (Window 1)** while the test programs are running.
+
+**Current state**
+
+```powershell
+& "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" status
 ```
-Allow TCP port 7878 through the controller's firewall.
 
-Commands you can type into the controller window:
+The reply now lists both programs. Look for `"state":"throttled"`, `"suspended"` or `"normal"` for `batch_simulator.exe`, and `pressure_percent` for the critical program's current load.
+
+**Live log**
+
+```powershell
+Get-Content C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl -Tail 10 -Wait
 ```
-list                                      show every connected server and its batch processes
-DISPATCH-01 suspend batch_simulator.exe   act on one server
-all release batch_simulator.exe           act on every server
-quit
+
+New entries appear as they're written:
+- a `"log_type":"sample"` line every second;
+- an `"log_type":"actuator_action"` line for every throttle, suspend or restore.
+
+Press **Ctrl+C** to stop watching. This doesn't affect the service.
+
+**Windows Event Log**
+
+```powershell
+Get-EventLog -LogName Application -Source ThreadHaulDaemon -Newest 5
 ```
-When at least 50% of servers are above 85%, the controller lowers every server's throttle threshold by 5 points until load drops. This shows up as `[cluster] ... bias 5.0` in the controller window.
 
----
-
-## 7. Troubleshooting
-
-| Symptom | Cause / fix |
+| Event ID | Meaning |
 |---|---|
-| `must run as Administrator` | Run elevated, or add `--allow-unelevated` for a console demo. |
-| `Invalid configuration (...)` at start | The message names the bad field. Fix it and re-run `validate-config`. |
-| `daemon is not running` from CLI | Start the daemon or service first. Without one, throttle/suspend/resume act directly on the process. |
-| `access denied: run this command as Administrator` | The control pipe only admits Administrators, SYSTEM and the daemon's own account. |
-| Batch never throttled | The process names in `processes` must match the exe names exactly (any case). Check `status` and the `pressure_percent` field. |
-| `An Application Control policy has blocked this file` | Windows Smart App Control can block newly built unsigned exes. Run again, or sign the binaries. |
-| No popup from the service | The popup needs someone logged in at the console. Check `alerts.popup`. |
-| Event Viewer says "description not found" | The event source isn't registered. Run `install.ps1`. |
+| 1000 | Batch program throttled |
+| 1001 | Batch program suspended |
+| 1002 | Batch program restored |
+| 1900 | Service could not start (the message explains why) |
+
+The same entries are visible in **Event Viewer** → *Windows Logs* → *Application*, with source **ThreadHaulDaemon**.
+
+## Step 7: Control a program manually (optional)
+
+An administrator can override the automatic behaviour at any time. In the Administrator window:
+
+```powershell
+& "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" suspend batch_simulator.exe
+```
+
+The batch program pauses immediately and **stays paused**: the service won't change it automatically while it is under manual control. To hand it back to automatic control:
+
+```powershell
+& "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" release batch_simulator.exe
+```
+
+All manual commands:
+
+| Command | Effect |
+|---|---|
+| `throttle <name or PID>` | Lower the program's priority and hold it there |
+| `suspend <name or PID>` | Pause the program and hold it there |
+| `resume <name or PID>` | Un-pause the program at normal priority and hold it there |
+| `release <name or PID>` | Return the program to automatic control |
+| `status` | Show the current state of everything the service manages |
+
+Programs on the protected list, such as `explorer.exe`, are always refused, so the service can't destabilise Windows.
+
+## Step 8: Produce a graph of the activity (optional, requires Python)
+
+Install the graphing library once:
+
+```powershell
+python -m pip install matplotlib
+```
+
+Then, from the project folder:
+
+```powershell
+python .\Source\Scripts\log_viewer.py C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl --out service_run.png
+start .\service_run.png
+```
+
+The script prints a table of every action the service took and the service's own CPU and memory use, then opens an image with three charts:
+- the critical program's load against the thresholds;
+- the batch program's state over time;
+- the service's own resource use.
+
+## Step 9: Change the settings (optional)
+
+The settings file is protected, so only an administrator can edit it. From the Administrator window:
+
+```powershell
+notepad C:\ProgramData\ThreadHaulDaemon\config.json
+```
+
+Changes take effect within one second of saving; there's no need to restart the service. Common settings:
+
+| Setting | Meaning | Default |
+|---|---|---|
+| `thresholds.high.percent` / `consecutive_samples` | Load that triggers throttling, and for how many seconds | 85%, 3 |
+| `thresholds.critical.percent` / `consecutive_samples` | Load that triggers suspension after throttling | 90%, 5 |
+| `thresholds.low.percent` / `consecutive_samples` | Load below which programs are restored | 60%, 5 |
+| `processes.critical` | Names of the programs to protect | `critical_simulator.exe` |
+| `processes.batch` | Names of the programs that may be slowed or paused | `batch_simulator.exe` |
+| `processes.protected` | Programs that must never be touched | `explorer.exe`, ... |
+| `adaptive.enabled` | Lower the thresholds early when load is rising quickly | `false` |
+| `alerts.popup` | Show a pop-up when a program is suspended | `true` |
+
+If you save an invalid setting (for example a recovery level higher than the throttle level), the service rejects it, records the reason in the log, and keeps running with the previous settings. To check a settings file before saving it in place:
+
+```powershell
+& "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" validate-config C:\ProgramData\ThreadHaulDaemon\config.json
+```
+
+## Step 10: Finish the demonstration
+
+Close Windows 2 and 3 (or press **Ctrl+C** in each). The service keeps running in the background and starts automatically when Windows starts.
+
+To stop or start the service manually (Administrator window):
+
+```powershell
+Stop-Service ThreadHaulDaemon
+Start-Service ThreadHaulDaemon
+```
+
+Stopping the service always restores any program it has slowed or paused before it exits.
+
+## Step 11: Uninstall
+
+From the Administrator window, in the project folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Source\Scripts\uninstall.ps1
+```
+
+This stops the service (restoring all programs), removes it, and deletes the program from `C:\Program Files`. The settings and logs in `C:\ProgramData\ThreadHaulDaemon` are kept.
+
+To remove the settings and logs as well:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Source\Scripts\uninstall.ps1 -RemoveData
+```
+
+To confirm removal:
+
+```powershell
+Get-Service ThreadHaulDaemon
+```
+
+This should now report that it cannot find the service.
+
+---
+
+## Appendix A: Run without installing (console mode)
+
+To try the software without installing a service, for example on a computer where you lack administrator rights, run it in a normal PowerShell window from the project folder:
+
+```powershell
+.\build\ThreadHaulDaemon.exe --console --config .\Source\Config\config.json --allow-unelevated
+```
+
+It behaves like the service but runs in that window. A non-administrator can't write to `C:\ProgramData`, so first make a copy of the settings with a local log location:
+
+```powershell
+(Get-Content .\Source\Config\config.json -Raw) -replace '"log_path": "[^"]*"', '"log_path": "demo.jsonl"' | Set-Content .\build\demo-config.json
+.\build\ThreadHaulDaemon.exe --console --config .\build\demo-config.json --allow-unelevated
+```
+
+Then start the two test programs as in Step 5. To stop, press **Ctrl+C** or run `.\build\ThreadHaulDaemon.exe stop` from another window. `--allow-unelevated` limits the software to programs started by your own user account.
+
+## Appendix B: Troubleshooting
+
+| Message or symptom | Cause | What to do |
+|---|---|---|
+| `... is not recognized` or `No such file or directory` | The command was run from the wrong folder | Run the `Set-Location` command from *Before you begin*, confirm `Test-Path .\build.cmd` prints `True`, and try again |
+| `A positional parameter cannot be found that accepts argument` | A path containing spaces was typed without quotation marks | Put the whole path inside `"..."` |
+| `Run this script from an elevated (Administrator) PowerShell` | The window isn't running as administrator | Open PowerShell with **Run as administrator** |
+| `Not found: ...ThreadHaulDaemon.exe. Run build.cmd first.` | The program hasn't been compiled | Complete Step 1 |
+| `Visual Studio not found` | The C++ compiler isn't installed | Install the *Desktop development with C++* workload |
+| `daemon is not running` | The service is stopped or not installed | Run `Get-Service ThreadHaulDaemon`; start it, or complete Step 3 |
+| `access denied: run this command as Administrator` | Manual commands require administrator rights | Use the Administrator window |
+| The batch program never shows `priority IDLE` | The program names in the settings don't match the running programs, or the critical program isn't running | Check the `status` output; the names in `processes.critical` and `processes.batch` must match exactly |
+| `An Application Control policy has blocked this file` | Windows Smart App Control sometimes blocks newly compiled programs | Run the command again. If it persists, the programs need to be code-signed. |
+| No pop-up appears | A user must be signed in at the console, and `alerts.popup` must be `true` | Check the setting; the log and Event Log still record the event |
+| The service stops shortly after starting | The settings file is invalid | Read event 1900 in the Event Log for the reason, correct the file, then `Start-Service ThreadHaulDaemon` |
