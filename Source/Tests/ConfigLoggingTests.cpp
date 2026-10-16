@@ -332,6 +332,22 @@ void LogsGenericEventsAndTrigger(const fs::path& dir) {
           "actuator action carries trigger");
 }
 
+void ParsesAutoProtectSection() {
+    Check(config::ParseConfig(kValidConfig).autoEnabled, __func__, "on when the section is absent");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["auto_protect"] = {{"enabled", true}, {"throttle_at_percent", 85}, {"max_processes", 5},
+                           {"recover_below_percent", 70}, {"idle_at_percent", 95}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.autoThrottlePercent == 85 && c.autoMaxProcesses == 5 && c.autoRecoverPercent == 70,
+          __func__, "values");
+    cfg["auto_protect"] = {{"recover_below_percent", 95}};
+    ExpectRejected(__func__, cfg, "auto_protect.recover_below_percent");
+    cfg["auto_protect"] = {{"throttle_at_percent", 90}, {"idle_at_percent", 80}};
+    ExpectRejected(__func__, cfg, "auto_protect.idle_at_percent");
+    cfg["auto_protect"] = {{"max_processes", 0}};
+    ExpectRejected(__func__, cfg, "auto_protect.max_processes");
+}
+
 void ParsesDashboardSection() {
     Check(config::ParseConfig(kValidConfig).dashboardEnabled &&
               config::ParseConfig(kValidConfig).dashboardPort == 8787,
@@ -392,6 +408,7 @@ int main() {
     RejectsBadProcessLists();
     RejectsMissingFile();
     ParsesDashboardSection();
+    ParsesAutoProtectSection();
     SetsProcessRoles();
 
     const fs::path dir =

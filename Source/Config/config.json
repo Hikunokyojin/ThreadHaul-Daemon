@@ -43,6 +43,18 @@
     "shared_token": "change-me",
     "heartbeat_seconds": 5
   },
+  "auto_protect": {
+    "enabled": true,
+    "throttle_at_percent": 90,
+    "throttle_samples": 5,
+    "use_idle": true,
+    "idle_at_percent": 97,
+    "idle_samples": 10,
+    "recover_below_percent": 75,
+    "recover_samples": 10,
+    "max_processes": 3,
+    "min_process_cpu_percent": 50
+  },
   "security": {
     "require_protected_config": false
   }

@@ -35,6 +35,14 @@ EventLogWriter::~EventLogWriter() {
     }
 }
 
+bool EventLogWriter::ReportMessage(WORD type, DWORD eventId, const std::wstring& message) {
+    if (source_ == nullptr) {
+        return false;
+    }
+    LPCWSTR strings[] = {message.c_str()};
+    return ReportEventW(source_, type, 0, eventId, nullptr, 1, 0, strings, nullptr) != FALSE;
+}
+
 bool EventLogWriter::ReportActuatorAction(uint32_t batchProcessId,
                                           const std::wstring& batchProcessName,
                                           uint32_t criticalProcessId,

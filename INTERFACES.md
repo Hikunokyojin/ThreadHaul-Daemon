@@ -137,6 +137,7 @@ Note on the last row: a single transition out of `Suspended` back to `Normal` pe
 | `manual_override` | every CLI/controller command target | `command`, `process_id`, `process_name`, `ok`, `result` |
 | `alert` | a batch process was suspended | `alert` (`batch_suspended`), `batch_process_id`, `batch_process_name`, `popup`, `webhook` |
 | `self_monitor` | every `telemetry.self_monitor_interval_seconds` | `cpu_percent` (of one core), `working_set_mb`, `private_mb`, `handle_count`, `managed_batch_processes`, `tracked_critical_names` |
+| `auto_protect` | system-wide auto-protect | `event` (`level`, `throttled`, `lowered_to_idle`, `restored`, `exempted`), `process_name`, `process_id`, `from_priority`/`to_priority` (`idle`, `below normal`, `normal`, `above normal`, `high`, `realtime`), `process_cpu_percent`, `system_cpu_percent`, `detail` |
 | `dashboard` | dashboard start or failure | `event` (`started`/`start_failed`), `url` or `error` |
 | `dashboard_action` | a role was changed from the dashboard | `action` (`set_role`), `process_name`, `role`, `confirmed_risk` (true when a safety warning was accepted), `config_sha256` |
 | `coordination` | controller connection events | `event` (`coordination_connected`, `coordination_disconnected`, `coordination_bias`, `coordination_command`, `coordination_rejected`, `coordination_error`), `detail` |
@@ -200,7 +201,10 @@ Validation (any failure stops startup with a message naming the field):
 "alerts":       { "popup": true, "webhook_url": "" },
 "coordination": { "enabled": false, "controller_host": "127.0.0.1", "controller_port": 7878, "shared_token": "", "heartbeat_seconds": 5 },
 "security":     { "require_protected_config": false },
-"dashboard":    { "enabled": true, "port": 8787 }
+"dashboard":    { "enabled": true, "port": 8787 },
+"auto_protect": { "enabled": true, "throttle_at_percent": 90, "throttle_samples": 5, "use_idle": true,
+                  "idle_at_percent": 97, "idle_samples": 10, "recover_below_percent": 75,
+                  "recover_samples": 10, "max_processes": 3, "min_process_cpu_percent": 50 }
 ```
 
 - `telemetry.cpu_normalization`: `"per_core"` means 100% is one logical core, so a 4-thread process can read 400%. `"total"` means 100% is every logical core.
@@ -214,6 +218,14 @@ Validation (any failure stops startup with a message naming the field):
   - The controller's bias is added under the same cap, and applies even with `enabled: false`.
 - `alerts.webhook_url`: must start with `http://` or `https://`. On suspension it receives an HTTP POST of the `actuator_action` JSON plus `"alert": "batch_suspended"`.
 - `coordination.controller_port`: 1–65535. `heartbeat_seconds`: 1–3600. The wire protocol is in `Source/Daemon/Coordination.h`.
+- `auto_protect.*` (Source/Telemetry/AutoProtectPolicy.h, Source/Daemon/AutoProtect.h): enabled even when the section is absent.
+  - `recover_below_percent` must be below `throttle_at_percent`.
+  - `idle_at_percent` must be at least `throttle_at_percent`.
+  - Percentages are of total system CPU, except `min_process_cpu_percent`, which is per core (1–6400).
+  - Only processes classified `normal` by `ClassifyProcess`, not on any configured list and not managed by the Actuator, are eligible.
+  - Priority is lowered, never suspended, and the exact original class is restored.
+  - `/api/status` carries an `auto_protect` object (`enabled`, `level`, `system_cpu_percent`, thresholds, `processes[]`, `exempt_pids`).
+  - The `exempt` command (CLI, control pipe, `/api/command`) restores a process and excludes it until it exits.
 - `dashboard.port`: 1024–65535. The dashboard listens on 127.0.0.1 only; see §4.1.
 - `processes.critical` and `processes.batch` may be empty. The service then monitors nothing until processes are assigned, typically from the dashboard.
 - `security.require_protected_config`: when `true`, a config file that Everyone, Users, Authenticated Users or Interactive can write is refused instead of only warned about.

@@ -152,6 +152,9 @@ bool Daemon::Initialize(std::wstring& error) {
                actuator::ProcessState to, double cpu, bool ok) {
             OnTransition(name, pid, from, to, cpu, ok);
         });
+    autoProtect_ = std::make_unique<AutoProtector>(
+        [this](const char* ev, const AutoProtector::Entry* e, DWORD from, DWORD to,
+               const std::string& detail) { OnAutoProtect(ev, e, from, to, detail); });
     ApplyConfig(cfg, true);
 
     // "dashboard" is answered only here, on the administrator-only pipe, so
@@ -233,6 +236,32 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
 
     alerter_.Configure(cfg.alertPopup, cfg.alertWebhookUrl);
 
+    if (autoProtect_) {
+        telemetry::AutoProtectSettings a;
+        a.enabled = cfg.autoEnabled;
+        a.throttlePercent = cfg.autoThrottlePercent;
+        a.throttleSamples = cfg.autoThrottleSamples;
+        a.useIdle = cfg.autoUseIdle;
+        a.idlePercent = cfg.autoIdlePercent;
+        a.idleSamples = cfg.autoIdleSamples;
+        a.recoverPercent = cfg.autoRecoverPercent;
+        a.recoverSamples = cfg.autoRecoverSamples;
+        a.maxProcesses = cfg.autoMaxProcesses;
+        a.minProcessCpuPercent = cfg.autoMinProcessCpuPercent;
+        autoProtect_->Configure(a, actuator::ActuatorManager::AlwaysProtectedNames());
+        // A process that is now configured explicitly is no longer auto-managed.
+        for (const auto& [pid, state] : autoProtect_->States()) {
+            (void)state;
+            for (const auto& e : telemetry::SnapshotProcesses()) {
+                if (e.pid == pid && (Contains(cfg.criticalProcesses, e.name) ||
+                                     Contains(cfg.batchProcesses, e.name) ||
+                                     Contains(cfg.protectedProcesses, e.name))) {
+                    autoProtect_->Exempt(pid, e.name);
+                }
+            }
+        }
+    }
+
     if (coordChanged) {
         if (coordination_) {
             coordination_->Stop();
@@ -308,6 +337,7 @@ void Daemon::Run(HANDLE stopEvent) {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         trigger_ = "shutdown";
         actuator_->ForceRecoverAllForShutdown();
+        if (autoProtect_) autoProtect_->RestoreAll("service stopping");
         trigger_ = "automatic";
         Log("service_lifecycle", ordered_json{{"event", "stopped"}});
     }
@@ -428,6 +458,13 @@ void Daemon::Poll() {
         it = actuator_->Find(*it) == nullptr ? adhoc_.erase(it) : std::next(it);
     }
 
+    if (autoProtect_) {
+        autoProtect_->Tick([this](const std::wstring& name, DWORD pid) {
+            return Contains(cfg_.criticalProcesses, name) || Contains(cfg_.batchProcesses, name) ||
+                   Contains(cfg_.protectedProcesses, name) || actuator_->Find(pid) != nullptr;
+        });
+    }
+
     if (cfg_.selfMonitorIntervalSec > 0 &&
         GetTickCount64() - lastSelfLog_ >= static_cast<ULONGLONG>(cfg_.selfMonitorIntervalSec) * 1000) {
         LogSelf();
@@ -536,6 +573,37 @@ std::string Daemon::StatusJson() {
     return j.dump();
 }
 
+void Daemon::OnAutoProtect(const char* event, const AutoProtector::Entry* e, DWORD from, DWORD to,
+                           const std::string& detail) {
+    ordered_json f;
+    f["event"] = event;
+    if (e != nullptr) {
+        f["process_name"] = Narrow(e->name);
+        f["process_id"] = e->pid;
+        if (from != 0 || to != 0) {
+            f["from_priority"] = PriorityClassName(from);
+            f["to_priority"] = PriorityClassName(to);
+        }
+        if (e->cpuAtAction > 0) f["process_cpu_percent"] = Round1(e->cpuAtAction);
+    }
+    f["system_cpu_percent"] = Round1(autoProtect_ ? autoProtect_->SystemCpu() : 0.0);
+    f["detail"] = detail;
+    Log("auto_protect", f);
+
+    if (e == nullptr) return;
+    DWORD id = 0;
+    WORD type = EVENTLOG_INFORMATION_TYPE;
+    if (std::string(event) == "throttled") { id = 1100; type = EVENTLOG_WARNING_TYPE; }
+    else if (std::string(event) == "lowered_to_idle") { id = 1101; type = EVENTLOG_WARNING_TYPE; }
+    else if (std::string(event) == "restored") { id = 1102; }
+    if (id != 0) {
+        eventLog_.ReportMessage(type, id,
+                                L"Auto-protect: " + e->name + L" (PID " + std::to_wstring(e->pid) + L") " +
+                                    Widen(event) + L", " + Widen(PriorityClassName(from)) + L" -> " +
+                                    Widen(PriorityClassName(to)) + L". " + Widen(detail));
+    }
+}
+
 void Daemon::UpdateDashboard() {
     bool enabled;
     int port;
@@ -630,6 +698,9 @@ std::string Daemon::DashboardStatus() {
     }
     sys["logical_cores"] = cores_;
     j["system"] = sys;
+    if (autoProtect_) {
+        j["auto_protect"] = ordered_json::parse(autoProtect_->StatusJson());
+    }
     return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
@@ -652,6 +723,11 @@ std::string Daemon::ProcessRolesJson() {
     actuator_->ForEach([&](const actuator::ProcessStateMachine& m) {
         states[std::to_string(m.BatchProcessId())] = logging::StateName(m.CurrentState());
     });
+    if (autoProtect_) {
+        for (const auto& [pid, state] : autoProtect_->States()) {
+            states[std::to_string(pid)] = state;
+        }
+    }
     j["states"] = states;
     return j.dump();
 }
@@ -826,6 +902,23 @@ std::string Daemon::HandleCommand(const std::string& line) {
         }
         SetEvent(remoteStopEvent_);
         return Reply(true, "stopping; managed processes will be restored").dump();
+    }
+    if (verb == "exempt") {
+        if (target.empty()) return Reply(false, "exempt needs a PID or process name").dump();
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        const bool numeric = std::all_of(target.begin(), target.end(), ::isdigit);
+        ordered_json results = ordered_json::array();
+        for (const telemetry::ProcessEntry& e : telemetry::SnapshotProcesses()) {
+            if (numeric ? std::to_string(e.pid) == target : SameName(e.name, Widen(target))) {
+                autoProtect_->Exempt(e.pid, e.name);
+                results.push_back({{"pid", e.pid}, {"name", Narrow(e.name)}, {"ok", true},
+                                   {"result", "restored and excluded from auto-protect until it exits"}});
+            }
+        }
+        if (results.empty()) return Reply(false, "no running process matches \"" + target + "\"").dump();
+        ordered_json reply = Reply(true, "done");
+        reply["results"] = results;
+        return reply.dump();
     }
     if (verb != "throttle" && verb != "suspend" && verb != "resume" && verb != "release") {
         return Reply(false, "unknown command \"" + verb +

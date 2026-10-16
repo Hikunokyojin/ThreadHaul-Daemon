@@ -157,6 +157,7 @@
     <ClCompile Include="..\Daemon\Coordination.cpp" />
     <ClCompile Include="..\Daemon\HttpServer.cpp" />
     <ClCompile Include="..\Daemon\Dashboard.cpp" />
+    <ClCompile Include="..\Daemon\AutoProtect.cpp" />
     <ClCompile Include="..\Telemetry\ProcessTable.cpp" />
     <ClCompile Include="..\Telemetry\ProcessSafety.cpp" />
   </ItemGroup>
@@ -180,6 +181,8 @@
     <ClInclude Include="..\Daemon\Coordination.h" />
     <ClInclude Include="..\Daemon\HttpServer.h" />
     <ClInclude Include="..\Daemon\Dashboard.h" />
+    <ClInclude Include="..\Daemon\AutoProtect.h" />
+    <ClInclude Include="..\Telemetry\AutoProtectPolicy.h" />
     <ClInclude Include="..\Telemetry\ProcessTable.h" />
     <ClInclude Include="..\Telemetry\ProcessSafety.h" />
   </ItemGroup>

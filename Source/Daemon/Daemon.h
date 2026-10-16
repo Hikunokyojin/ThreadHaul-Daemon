@@ -16,6 +16,7 @@
 #include "ControlPipe.h"
 #include "Coordination.h"
 #include "Dashboard.h"
+#include "AutoProtect.h"
 #include "EventLogWriter.h"
 #include "JsonLinesLogger.h"
 #include "ProcessMonitor.h"
@@ -114,6 +115,9 @@ private:
     void UpdateDashboard();
     std::string DashboardInfo();
     std::unique_ptr<Dashboard> dashboard_;
+    std::unique_ptr<AutoProtector> autoProtect_;
+    void OnAutoProtect(const char* event, const AutoProtector::Entry* e, DWORD from, DWORD to,
+                       const std::string& detail);
     bool dashboardDirty_ = true;
     std::string dashboardError_;
     ULONGLONG startedTick_ = 0;

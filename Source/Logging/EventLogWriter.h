@@ -27,6 +27,10 @@ public:
                               actuator::ProcessState to, double cpuPercent,
                               bool actuationSucceeded);
 
+    // Free-text entry (used by auto-protect: 1100 throttled, 1101 lowered to
+    // idle, 1102 restored).
+    bool ReportMessage(WORD type, DWORD eventId, const std::wstring& message);
+
 private:
     HANDLE source_ = nullptr;
 };

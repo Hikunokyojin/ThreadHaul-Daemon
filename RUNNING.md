@@ -229,6 +229,28 @@ Marking any program **Protected** is always allowed, because that only stops the
 - **Export CSV** downloads the rows currently shown, for use in Excel or another tool.
 - Turn off **Live** to stop new entries arriving while you read.
 
+### Automatic CPU protection
+
+Even with no roles assigned, the service protects the whole computer from being overloaded:
+
+| When the whole system's CPU... | Auto-protect... |
+|---|---|
+| is at or above **90%** for 5 seconds | lowers the heaviest ordinary applications (up to **3**, each using at least **50%** of one core) to **Below Normal** priority |
+| is still at or above **97%** for 10 seconds | lowers them to **Idle** priority |
+| drops below **75%** for 10 seconds | restores every one to **the exact priority it had before** |
+
+It never selects:
+- Windows components or background services;
+- essential processes;
+- any program you have given a role (critical, batch or protected);
+- programs already managed by the service.
+
+It only lowers priority and never pauses a program, so nothing freezes or loses work. Every action is written to the activity log (`auto_protect`) and to the Windows Event Log (IDs 1100 throttled, 1101 lowered to idle, 1102 restored).
+
+A program that should never be slowed can be marked **Protected**. While it is throttled, **Restore** (dashboard) or `ThreadHaulDaemon.exe exempt <name|pid>` puts it back and leaves it alone until it exits.
+
+The **Overview** tab shows auto-protect's state ("Watching" or "Protecting"), the list of programs it has throttled with their original priority, and a **Restore** button for each.
+
 ## Step 7: Observe what the service is doing
 
 Run these in the **Administrator window (Window 1)** while the test programs are running.

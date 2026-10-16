@@ -152,13 +152,14 @@ HttpResponse Dashboard::Handle(const HttpRequest& req) {
         if (req.path == "/api/command") {
             const std::string verb = body.value("command", "");
             const std::string target = body.value("target", "");
-            if (verb != "throttle" && verb != "suspend" && verb != "resume" && verb != "release") {
-                return Error(400, "command must be throttle, suspend, resume or release");
+            if (verb != "throttle" && verb != "suspend" && verb != "resume" && verb != "release" &&
+                verb != "exempt") {
+                return Error(400, "command must be throttle, suspend, resume, release or exempt");
             }
             if (target.empty() || target.find_first_of(" \t\r\n") != std::string::npos) {
                 return Error(400, "target must be a PID or an executable name");
             }
-            if (verb != "release" && verb != "resume" && !body.value("confirm", false)) {
+            if (verb != "release" && verb != "resume" && verb != "exempt" && !body.value("confirm", false)) {
                 const telemetry::SafetyInfo s = daemon_.SafetyOf(target);
                 if (s.level == telemetry::ProcessSafety::System ||
                     s.level == telemetry::ProcessSafety::Service) {

@@ -21,7 +21,7 @@ set LIBS=advapi32.lib ws2_32.lib winhttp.lib wtsapi32.lib bcrypt.lib user32.lib 
 set ACTUATOR="%SRC%\Actuator\StateMachine.cpp" "%SRC%\Actuator\ActuatorManager.cpp" "%SRC%\Actuator\PriorityControl.cpp" "%SRC%\Actuator\ThreadControl.cpp"
 set TELEMETRY="%SRC%\Telemetry\CpuMath.cpp" "%SRC%\Telemetry\ProcessMonitor.cpp" "%SRC%\Telemetry\AdaptiveThresholds.cpp" "%SRC%\Telemetry\ProcessTable.cpp" "%SRC%\Telemetry\ProcessSafety.cpp"
 set CONFIGLOG="%SRC%\Config\Config.cpp" "%SRC%\Logging\JsonLinesLogger.cpp" "%SRC%\Logging\EventLogWriter.cpp"
-set DAEMON="%SRC%\Daemon\Daemon.cpp" "%SRC%\Daemon\Alerts.cpp" "%SRC%\Daemon\ConfigSecurity.cpp" "%SRC%\Daemon\ControlPipe.cpp" "%SRC%\Daemon\Coordination.cpp" "%SRC%\Daemon\HttpServer.cpp" "%SRC%\Daemon\Dashboard.cpp"
+set DAEMON="%SRC%\Daemon\Daemon.cpp" "%SRC%\Daemon\Alerts.cpp" "%SRC%\Daemon\ConfigSecurity.cpp" "%SRC%\Daemon\ControlPipe.cpp" "%SRC%\Daemon\Coordination.cpp" "%SRC%\Daemon\HttpServer.cpp" "%SRC%\Daemon\Dashboard.cpp" "%SRC%\Daemon\AutoProtect.cpp"
 
 echo [1/5] ThreadHaulDaemon.exe
 cl %CFLAGS% %INC% "%SRC%\main.cpp" %ACTUATOR% %TELEMETRY% %CONFIGLOG% %DAEMON% %LIBS% /Fo"%OBJ%\\" /Fe"%OUT%\ThreadHaulDaemon.exe" >"%OUT%\build.log" || goto :failed

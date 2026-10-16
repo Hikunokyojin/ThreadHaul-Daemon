@@ -182,6 +182,7 @@
     history.push({
       t: now, pressure: s.pressure_percent, cpu: s.system ? s.system.cpu_percent : null,
       high: s.thresholds.high, crit: s.thresholds.critical, low: s.thresholds.low, susp: anySuspended,
+      auto: !!(s.auto_protect && s.auto_protect.level !== "normal"),
     });
     while (history.length && now - history[0].t > HISTORY_SECONDS * 1000) history.shift();
     renderOverview(s);
@@ -223,6 +224,8 @@
       ? `${counts.normal} normal · ${counts.throttled} throttled · ${counts.suspended} suspended`
       : "none running";
 
+    renderAuto(s.auto_protect);
+
     if (s.service) {
       $("kpi-service").textContent = "Running · " + fmtUptime(s.service.uptime_seconds);
       $("kpi-service-sub").textContent =
@@ -250,6 +253,48 @@
       bb.appendChild(tr);
     }
     $("batch-empty").classList.toggle("hidden", batch.length > 0);
+  }
+
+  function renderAuto(a) {
+    const card = $("card-auto");
+    if (!a) return;
+    if (!a.enabled) {
+      $("kpi-auto").textContent = "Off";
+      $("kpi-auto-sub").textContent = "enable auto_protect in the settings";
+      $("auto-box").classList.add("hidden");
+      card.classList.remove("alert-warn", "alert-bad");
+      return;
+    }
+    $("auto-box").classList.remove("hidden");
+    const n = (a.processes || []).length;
+    const label = a.level === "normal" ? "Watching" : a.level === "idle" ? "Protecting (idle)" : "Protecting";
+    $("kpi-auto").textContent = label;
+    $("kpi-auto-sub").textContent = n
+      ? `${n} program${n > 1 ? "s" : ""} throttled · system CPU ${fmt1(a.system_cpu_percent)}%`
+      : `acts at ≥ ${a.throttle_at_percent}% system CPU`;
+    card.classList.toggle("alert-warn", a.level === "throttling");
+    card.classList.toggle("alert-bad", a.level === "idle");
+    $("auto-rule").textContent =
+      `Throttles at ≥ ${a.throttle_at_percent}%` + (a.idle_at_percent ? `, idle at ≥ ${a.idle_at_percent}%` : "") +
+      `, restores below ${a.recover_below_percent}% · up to ${a.max_processes} programs`;
+
+    const body = $("auto-body");
+    body.replaceChildren();
+    for (const p of a.processes || []) {
+      const tr = el("tr");
+      const pr = el("td");
+      pr.appendChild(el("span", "badge " + (p.current_priority === "idle" ? "bad" : "warn"), p.current_priority));
+      pr.appendChild(el("span", "muted", ` (was ${p.original_priority})`));
+      const act = el("td", "actions-col");
+      const b = el("button", "btn", "Restore");
+      b.title = "Restore its original priority and exclude it from auto-protect until it exits";
+      b.addEventListener("click", () => command("exempt", p.pid));
+      act.appendChild(b);
+      tr.append(el("td", null, p.name), el("td", "mono", p.pid), pr, el("td", "num", fmt1(p.cpu_at_action)),
+        el("td", "num", fmtUptime(p.seconds)), act);
+      body.appendChild(tr);
+    }
+    $("auto-empty").classList.toggle("hidden", n > 0);
   }
 
   function setMeter(id, value) {
@@ -292,7 +337,13 @@
       ctx.fillText(s === 0 ? "now" : `-${s / 60}m`, xx - 12, h - 6);
     }
 
-    // shade periods where a batch process was suspended
+    // shade periods where auto-protect was active, then suspended periods on top
+    ctx.fillStyle = color("--chart-auto");
+    for (let i = 0; i < history.length; i++) {
+      if (!history[i].auto) continue;
+      const x0 = x(history[i].t), x1 = i + 1 < history.length ? x(history[i + 1].t) : x(now);
+      ctx.fillRect(x0, padT, Math.max(1, x1 - x0), plotH);
+    }
     ctx.fillStyle = color("--chart-susp");
     for (let i = 0; i < history.length; i++) {
       if (!history[i].susp) continue;
@@ -507,6 +558,10 @@
       case "coordination": return `${String(e.event).replace(/_/g, " ")} ${e.detail || ""}`;
       case "dashboard": return e.event === "started" ? `dashboard started at ${e.url}` : `dashboard ${e.event}: ${e.error || ""}`;
       case "dashboard_action": return `role of ${e.process_name} set to ${e.role}`;
+      case "auto_protect":
+        return e.event === "level" ? `auto-protect ${e.detail}`
+          : e.event === "exempted" ? `excluded from auto-protect (${e.detail})`
+          : `${String(e.event).replace(/_/g, " ")}: priority ${e.from_priority} → ${e.to_priority} · ${e.detail}`;
       default: {
         const { log_type, timestamp, ...rest } = e;
         return JSON.stringify(rest);
@@ -528,6 +583,10 @@
     if (e.log_type === "threshold_event") return e.threshold === "low" ? "good" : "warn";
     if (e.log_type === "adaptive_threshold" || e.log_type === "manual_override") return "warn";
     if (e.log_type === "dashboard" && e.event === "start_failed") return "bad";
+    if (e.log_type === "auto_protect") {
+      return e.event === "restored" || e.event === "exempted" ? "good"
+        : e.event === "level" ? (String(e.detail).startsWith("normal") ? "warn" : "good") : "warn";
+    }
     if (e.log_type === "sample" || e.log_type === "self_monitor") return "muted";
     return "";
   }

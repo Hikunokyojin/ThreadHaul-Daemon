@@ -65,6 +65,11 @@
           <div class="card-value" id="kpi-batch">–</div>
           <div class="card-sub" id="kpi-batch-sub">&nbsp;</div>
         </div>
+        <div class="card" id="card-auto">
+          <div class="card-label">Auto-protect</div>
+          <div class="card-value small" id="kpi-auto">–</div>
+          <div class="card-sub" id="kpi-auto-sub">&nbsp;</div>
+        </div>
         <div class="card">
           <div class="card-label">Service</div>
           <div class="card-value small" id="kpi-service">–</div>
@@ -82,10 +87,29 @@
             <span><i class="sw sw-crit"></i>Suspend</span>
             <span><i class="sw sw-low"></i>Recover</span>
             <span><i class="sw sw-susp"></i>A batch process suspended</span>
+            <span><i class="sw sw-auto"></i>Auto-protect active</span>
           </div>
         </div>
         <canvas id="chart" height="260"></canvas>
         <p class="muted small-note">Last 5 minutes, sampled every second while this page is open.</p>
+      </div>
+
+      <div class="box" id="auto-box">
+        <div class="box-head">
+          <h2>Auto-protect: automatically throttled programs</h2>
+          <span class="muted small-note" id="auto-rule"></span>
+        </div>
+        <p class="hint">
+          When the whole computer stays overloaded, ThreadHaul lowers the priority of the ordinary applications using the most
+          CPU so that Windows and your other programs stay responsive. Programs are never paused, and each one gets its original
+          priority back when the load drops. Windows components, services and any program you have given a role are never
+          selected. <strong>Restore</strong> puts a program back now and leaves it alone until it exits.
+        </p>
+        <table class="table">
+          <thead><tr><th>Program</th><th>PID</th><th>Priority</th><th class="num">CPU % when throttled</th><th class="num">For</th><th class="actions-col">Action</th></tr></thead>
+          <tbody id="auto-body"></tbody>
+        </table>
+        <p class="empty hidden" id="auto-empty">Nothing is throttled. The system is within normal load.</p>
       </div>
 
       <div class="grid2">

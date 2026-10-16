@@ -195,6 +195,7 @@ void PrintUsage() {
         L"  ThreadHaulDaemon.exe suspend  <pid|name>   suspend every thread and hold\n"
         L"  ThreadHaulDaemon.exe resume   <pid|name>   resume + normal priority and hold\n"
         L"  ThreadHaulDaemon.exe release  <pid|name>   hand back to automatic control\n"
+        L"  ThreadHaulDaemon.exe exempt   <pid|name>   undo auto-protect and exclude it until it exits\n"
         L"  ThreadHaulDaemon.exe status                current pressure, thresholds, states\n"
         L"  ThreadHaulDaemon.exe stop                  stop a console-mode daemon cleanly\n"
         L"  ThreadHaulDaemon.exe dashboard             open the live web dashboard in your browser\n\n"
@@ -227,7 +228,8 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     if (command == L"throttle" || command == L"suspend" || command == L"resume" ||
-        command == L"release" || command == L"status" || command == L"stop") {
+        command == L"release" || command == L"status" || command == L"stop" ||
+        command == L"exempt") {
         const std::wstring target = positional.empty() ? L"" : positional[0];
         std::string response;
         const std::string request = Narrow(command + (target.empty() ? L"" : L" " + target));
@@ -235,7 +237,8 @@ int wmain(int argc, wchar_t* argv[]) {
             std::printf("%s\n", response.c_str());
             return response.find("\"ok\":true") != std::string::npos ? 0 : 1;
         }
-        if (command == L"status" || command == L"release" || command == L"stop") {
+        if (command == L"status" || command == L"release" || command == L"stop" ||
+            command == L"exempt") {
             std::printf("%s\n", response.c_str());
             return 1;
         }

@@ -64,6 +64,20 @@ struct DaemonConfig {
     // non-administrators can modify.
     bool requireProtectedConfig = false;
 
+    // auto_protect.*: system-wide protection. When total CPU is overloaded,
+    // the heaviest ordinary applications are lowered in priority and later
+    // restored. On unless the section sets "enabled": false.
+    bool   autoEnabled = true;
+    double autoThrottlePercent = 90.0;
+    int    autoThrottleSamples = 5;
+    bool   autoUseIdle = true;
+    double autoIdlePercent = 97.0;
+    int    autoIdleSamples = 10;
+    double autoRecoverPercent = 75.0;
+    int    autoRecoverSamples = 10;
+    int    autoMaxProcesses = 3;
+    double autoMinProcessCpuPercent = 50.0;
+
     // dashboard.*: local web dashboard served on 127.0.0.1 only.
     bool dashboardEnabled = true;
     int  dashboardPort = 8787;

@@ -301,6 +301,27 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
                                              "security.require_protected_config", false);
     }
 
+    if (const json* a = OptObject(root, "auto_protect", "auto_protect")) {
+        const std::string p = "auto_protect.";
+        cfg.autoEnabled = OptBool(*a, "enabled", p + "enabled", true);
+        cfg.autoThrottlePercent = OptNumber(*a, "throttle_at_percent", p + "throttle_at_percent", 10, 100, 90);
+        cfg.autoThrottleSamples = OptInteger(*a, "throttle_samples", p + "throttle_samples", 1, 600, 5);
+        cfg.autoUseIdle = OptBool(*a, "use_idle", p + "use_idle", true);
+        cfg.autoIdlePercent = OptNumber(*a, "idle_at_percent", p + "idle_at_percent", 10, 100, 97);
+        cfg.autoIdleSamples = OptInteger(*a, "idle_samples", p + "idle_samples", 1, 600, 10);
+        cfg.autoRecoverPercent = OptNumber(*a, "recover_below_percent", p + "recover_below_percent", 1, 100, 75);
+        cfg.autoRecoverSamples = OptInteger(*a, "recover_samples", p + "recover_samples", 1, 600, 10);
+        cfg.autoMaxProcesses = OptInteger(*a, "max_processes", p + "max_processes", 1, 50, 3);
+        cfg.autoMinProcessCpuPercent =
+            OptNumber(*a, "min_process_cpu_percent", p + "min_process_cpu_percent", 1, 6400, 50);
+        if (cfg.autoRecoverPercent >= cfg.autoThrottlePercent) {
+            throw ConfigError("auto_protect.recover_below_percent must be below auto_protect.throttle_at_percent");
+        }
+        if (cfg.autoUseIdle && cfg.autoIdlePercent < cfg.autoThrottlePercent) {
+            throw ConfigError("auto_protect.idle_at_percent must be at least auto_protect.throttle_at_percent");
+        }
+    }
+
     if (const json* d = OptObject(root, "dashboard", "dashboard")) {
         cfg.dashboardEnabled = OptBool(*d, "enabled", "dashboard.enabled", true);
         cfg.dashboardPort = OptInteger(*d, "port", "dashboard.port", 1024, 65535, 8787);

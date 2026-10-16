@@ -18,6 +18,7 @@ ThreadHaul-Daemon is a lightweight Windows Service, written in C++17 against the
 - [Installing as a Windows Service](#installing-as-a-windows-service)
 - [Using the service](#using-the-service)
 - [Web dashboard](#web-dashboard)
+- [Automatic CPU protection](#automatic-cpu-protection)
 - [Configuration](#configuration)
 - [Logs and monitoring](#logs-and-monitoring)
 - [Multi-server deployments](#multi-server-deployments)
@@ -57,6 +58,7 @@ Batch work runs at full speed whenever the server has capacity, and steps aside 
 ## Features
 
 **Core control**
+- **Automatic CPU protection**, on by default. When the whole computer is overloaded, the heaviest ordinary applications are lowered in priority so Windows and other programs stay responsive. They are restored automatically when load drops, and no configuration is needed.
 - Graded response: priority demotion first, thread suspension only when needed, automatic recovery after that.
 - Each batch process has its own state machine, so one job can be suspended while another is only throttled.
 - Multiple critical and multiple batch processes, matched by executable name (case-insensitive), including multiple instances of the same name.
@@ -246,6 +248,7 @@ $thd = "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe"
 & $thd suspend  invoice_batch.exe      # suspend all threads, and hold
 & $thd resume   invoice_batch.exe      # resume at normal priority, and hold
 & $thd release  invoice_batch.exe      # return to automatic control
+& $thd exempt   heavy_app.exe          # undo auto-protect for a program until it exits
 & $thd dashboard                       # open the web dashboard in your browser
 & $thd validate-config C:\ProgramData\ThreadHaulDaemon\config.json
 & $thd help
@@ -278,7 +281,7 @@ This asks the running service for a per-session access key over the administrato
 
 | Tab | What it provides |
 |---|---|
-| **Overview** | Critical pressure against the effective thresholds; system CPU and memory; batch process counts by state; service uptime and footprint. Also a five-minute live chart, with periods when a batch process was suspended shaded, and per-process Throttle / Suspend / Resume / Release buttons. |
+| **Overview** | Auto-protect state, with the list of automatically throttled programs and a Restore button for each; critical pressure against the effective thresholds; system CPU and memory; batch process counts by state; service uptime and footprint. Also a five-minute live chart, with periods when a batch process was suspended shaded, and per-process Throttle / Suspend / Resume / Release buttons. |
 | **Processes** | Every running process, with CPU % (per logical core) and memory, sortable and searchable. Set each program's role (**Critical**, **Batch**, **Protected** or **Unassigned**). The change is written to `config.json` and applied immediately, and the file's permissions are preserved. Each process carries a safety level: *Essential* (never managed), *System process* (part of Windows, hidden by default), or *Background service*. Managing a system process or service requires an explicit confirmation. |
 | **Activity log** | The JSON Lines log rendered as a readable table, newest first, colour-coded by severity. Filter by event type, search text and time range; click a row for the pretty-printed raw JSON; export the filtered rows as CSV. New entries stream in live. |
 
@@ -304,6 +307,30 @@ This asks the running service for a per-session access key over the administrato
 The service enforces this, not just the page. A request that would make a system process or service critical or batch, or throttle or suspend one, returns `{"ok":false,"needs_confirmation":true,"safety":"system","message":"<reason>"}` until it is repeated with `"confirm":true`. Essential processes are always refused.
 
 To change the port or turn the dashboard off, set `dashboard.port` or `dashboard.enabled` in `config.json`.
+
+## Automatic CPU protection
+
+Auto-protect works on its own, with no programs configured. It watches **total system CPU** once per second:
+
+| When the whole system's CPU... | Auto-protect... |
+|---|---|
+| is at or above **90%** for 5 seconds | lowers the heaviest ordinary applications (up to **3**, each using at least **50%** of one core) to **Below Normal** priority |
+| is still at or above **97%** for 10 seconds | lowers them to **Idle** priority |
+| drops below **75%** for 10 seconds | restores every one to **the exact priority it had before** |
+
+It never selects:
+- Windows components or background services;
+- essential processes;
+- any program you have given a role (critical, batch or protected);
+- programs already managed by the service.
+
+It only lowers priority and never pauses a program, so nothing freezes or loses work. Every action is written to the activity log (`auto_protect`) and to the Windows Event Log (IDs 1100 throttled, 1101 lowered to idle, 1102 restored).
+
+A program that should never be slowed can be marked **Protected**. While it is throttled, **Restore** (dashboard) or `ThreadHaulDaemon.exe exempt <name|pid>` puts it back and leaves it alone until it exits.
+
+> **Choosing which program to slow.** A background service can't reliably tell which window you're using. If the application in front of you is one of the heaviest CPU users, it can be selected too. Mark interactive programs that must stay smooth as **Protected**, or raise `min_process_cpu_percent`.
+
+Settings are in the `auto_protect` section of `config.json`. Set `"enabled": false` to turn it off.
 
 ## Configuration
 
@@ -359,6 +386,11 @@ The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`. Edit 
 | `coordination.*` | Central controller connection (see below) | disabled |
 | `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
 | `dashboard.enabled` / `dashboard.port` | Web dashboard on `127.0.0.1` | `true`, 8787 (1024–65535) |
+| `auto_protect.enabled` | Automatic CPU protection (on even if the section is absent) | `true` |
+| `auto_protect.throttle_at_percent` / `throttle_samples` | System CPU that starts throttling, and for how many seconds | 90, 5 |
+| `auto_protect.use_idle` / `idle_at_percent` / `idle_samples` | Escalate to Idle priority under extreme load | `true`, 97, 10 |
+| `auto_protect.recover_below_percent` / `recover_samples` | Restore everything below this level | 75, 10 |
+| `auto_protect.max_processes` / `min_process_cpu_percent` | How many programs at most, and the minimum CPU (per core) a program needs to be chosen | 3, 50 |
 
 **Validation rules:**
 - Every required field must be present and within range.
@@ -392,6 +424,7 @@ Each line of the log file is one complete JSON object, written in this form: `lo
 | `alert` | A suspension alert was sent |
 | `self_monitor` | Periodically: the service's own CPU, memory and handle count |
 | `service_lifecycle` | The service started or stopped. The start entry includes the configuration file's SHA-256. |
+| `auto_protect` | Auto-protect changed level, throttled, lowered to idle, restored or exempted a program, with its priority before and after and the system and process CPU |
 | `dashboard` / `dashboard_action` | The dashboard started (or failed to start), or a role was changed from the dashboard |
 
 Follow it live:
@@ -421,6 +454,7 @@ Source **ThreadHaulDaemon** in the *Application* log:
 | 1000 | Batch process throttled |
 | 1001 | Batch process suspended (warning) |
 | 1002 | Batch process recovered |
+| 1100 / 1101 / 1102 | Auto-protect throttled a program / lowered it to Idle / restored it |
 | 1900 | Service failed to start. The message gives the reason. |
 
 ```powershell

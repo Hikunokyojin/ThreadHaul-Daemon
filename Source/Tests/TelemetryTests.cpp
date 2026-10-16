@@ -5,6 +5,7 @@
 #include "CpuMath.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
+#include "AutoProtectPolicy.h"
 #include "ThresholdTracker.h"
 
 #include <cmath>
@@ -348,6 +349,55 @@ void ClassifiesRealProcesses() {
     Check(std::string(SafetyName(ProcessSafety::Service)) == "service", __func__, "names");
 }
 
+// ---- Auto-protect policy ----
+
+void AutoProtectThrottlesAfterSustainedLoad() {
+    AutoProtectSettings s;  // 90% x5 throttle, 97% x10 idle, <75% x10 recover
+    AutoProtectState st;
+    for (int i = 0; i < 4; ++i) st.Update(95, s);
+    Check(st.Level() == AutoLevel::Normal, __func__, "4 overloaded samples: still normal");
+    Check(st.Update(95, s) == AutoLevel::Throttle, __func__, "5th sample at 95% starts throttling");
+}
+
+void AutoProtectNeedsConsecutiveSamples() {
+    AutoProtectSettings s;
+    AutoProtectState st;
+    for (int i = 0; i < 4; ++i) st.Update(95, s);
+    st.Update(50, s);
+    for (int i = 0; i < 4; ++i) st.Update(95, s);
+    Check(st.Level() == AutoLevel::Normal, __func__, "a dip resets the count");
+}
+
+void AutoProtectEscalatesAndRecovers() {
+    AutoProtectSettings s;
+    AutoProtectState st;
+    for (int i = 0; i < 10; ++i) st.Update(99, s);
+    Check(st.Level() == AutoLevel::Idle, __func__, "10 samples at 99% reach idle");
+    for (int i = 0; i < 9; ++i) st.Update(80, s);
+    Check(st.Level() == AutoLevel::Idle, __func__, "80% is above recovery: stays");
+    for (int i = 0; i < 9; ++i) st.Update(60, s);
+    Check(st.Level() == AutoLevel::Idle, __func__, "9 low samples: not yet");
+    Check(st.Update(60, s) == AutoLevel::Normal, __func__, "10th low sample recovers");
+}
+
+void AutoProtectIdleCanBeDisabled() {
+    AutoProtectSettings s;
+    s.useIdle = false;
+    AutoProtectState st;
+    for (int i = 0; i < 30; ++i) st.Update(100, s);
+    Check(st.Level() == AutoLevel::Throttle, __func__, "use_idle false never goes to idle");
+}
+
+void AutoProtectSelectsHeaviest() {
+    std::vector<AutoCandidate> c{{10, L"a.exe", 15}, {11, L"b.exe", 150}, {12, L"c.exe", 60},
+                                {13, L"d.exe", 90}, {14, L"e.exe", 25}};
+    const auto t = SelectAutoTargets(c, 20, 3);
+    Check(t.size() == 3 && t[0].pid == 11 && t[1].pid == 13 && t[2].pid == 12, __func__,
+          "top 3 by CPU, heaviest first");
+    Check(SelectAutoTargets(c, 200, 3).empty(), __func__, "nothing above the minimum");
+    Check(SelectAutoTargets(c, 20, 0).empty(), __func__, "no free slots");
+}
+
 }
 
 int main() {
@@ -382,6 +432,11 @@ int main() {
     PathIsUnderChecks();
     ClassifiesEssentialNames();
     ClassifiesRealProcesses();
+    AutoProtectThrottlesAfterSustainedLoad();
+    AutoProtectNeedsConsecutiveSamples();
+    AutoProtectEscalatesAndRecovers();
+    AutoProtectIdleCanBeDisabled();
+    AutoProtectSelectsHeaviest();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
