@@ -1,0 +1,61 @@
+{
+  "polling": {
+    "interval_ms": 1000
+  },
+  "thresholds": {
+    "high":     { "percent": 85, "consecutive_samples": 3 },
+    "critical": { "percent": 90, "consecutive_samples": 5 },
+    "low":      { "percent": 60, "consecutive_samples": 5 }
+  },
+  "processes": {
+    "critical":  ["critical_simulator.exe"],
+    "batch":     ["batch_simulator.exe"],
+    "protected": ["explorer.exe", "ThreadHaulDaemon.exe", "ThreadHaulController.exe"]
+  },
+  "logging": {
+    "log_path": "C:\\ProgramData\\ThreadHaulDaemon\\logs\\threadhaul.jsonl",
+    "max_file_size_mb": 50,
+    "max_rotated_files": 5
+  },
+  "telemetry": {
+    "cpu_normalization": "per_core",
+    "log_samples": true,
+    "self_monitor_interval_seconds": 30
+  },
+  "triggers": {
+    "memory": { "enabled": false, "system_load_limit_percent": 95, "critical_working_set_limit_mb": 0 },
+    "io":     { "enabled": false, "critical_io_limit_mb_per_sec": 200 }
+  },
+  "adaptive": {
+    "enabled": false,
+    "window_samples": 10,
+    "horizon_samples": 3,
+    "max_adjust_percent": 10
+  },
+  "alerts": {
+    "popup": true,
+    "webhook_url": ""
+  },
+  "coordination": {
+    "enabled": false,
+    "controller_host": "127.0.0.1",
+    "controller_port": 7878,
+    "shared_token": "change-me",
+    "heartbeat_seconds": 5
+  },
+  "auto_protect": {
+    "enabled": true,
+    "throttle_at_percent": 90,
+    "throttle_samples": 5,
+    "use_idle": true,
+    "idle_at_percent": 97,
+    "idle_samples": 10,
+    "recover_below_percent": 75,
+    "recover_samples": 10,
+    "max_processes": 3,
+    "min_process_cpu_percent": 50
+  },
+  "security": {
+    "require_protected_config": false
+  }
+}

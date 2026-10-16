@@ -1,6 +1,7 @@
 #pragma once
 
 #include "StateMachine.h"
+#include "ThresholdEvent.h"
 #include <unordered_map>
 #include <memory>
 #include <vector>
@@ -12,19 +13,57 @@ public:
     explicit ActuatorManager(StateMachineConfig config,
                               TransitionCallback onTransition = nullptr);
 
-    void AddBatchProcess(const std::wstring& processName, DWORD processId);
+    // Returns false (and does not manage the process) if it is protected.
+    bool AddBatchProcess(const std::wstring& processName, DWORD processId);
+
+    // Replaces the configured protection list. Any currently managed process
+    // that is now protected is restored to normal and dropped.
+    void SetProtectedProcessNames(std::vector<std::wstring> names);
+
+    // True for this service's own process, a fixed set of Windows processes
+    // whose suspension would hang the system, and any configured name.
+    // Names are compared case-insensitively against the executable name.
+    bool IsProtected(const std::wstring& processName, DWORD processId) const;
+
+    // The built-in names that are always protected, whatever the config says.
+    static std::vector<std::wstring> AlwaysProtectedNames();
 
     void RemoveBatchProcess(DWORD processId);
 
-    void UpdateAll(double criticalProcessCpuPercent);
+    // Stable public entry point for the Telemetry layer, per INTERFACES.md
+    // section 2 (CONFIRMED 2026-09-25). Telemetry calls this once per fired
+    // threshold; Actuator applies evt.observedCpuPercent to every batch
+    // process it currently manages. evt.criticalProcessId is not used to
+    // select which process gets throttled/suspended -- see INTERFACES.md
+    // section 2 for why.
+    void OnThresholdEvent(const ThresholdEvent& evt);
+
+    // Returns true if any managed process changed state on this sample.
+    bool UpdateAll(double criticalProcessCpuPercent);
 
     void ForceRecoverAllForShutdown();
+
+    // Applies new thresholds to every managed process and to any added later.
+    void SetConfig(const StateMachineConfig& config);
+    const StateMachineConfig& Config() const { return config_; }
+
+    // Manual override (CLI). Returns nullptr if the PID is not managed.
+    // ForceState holds the process in newState until ReleaseManualHold.
+    ProcessStateMachine* Find(DWORD processId);
+    bool ForceState(DWORD processId, ProcessState newState, double cpuPercent, bool hold);
+    bool ReleaseManualHold(DWORD processId);
+
+    template <typename Fn>
+    void ForEach(Fn fn) const {
+        for (const auto& [pid, machine] : machines_) fn(*machine);
+    }
 
     size_t ManagedCount() const { return machines_.size(); }
 
 private:
     StateMachineConfig config_;
     TransitionCallback onTransition_;
+    std::vector<std::wstring> protectedNames_;
     std::unordered_map<DWORD, std::unique_ptr<ProcessStateMachine>> machines_;
 };
 

@@ -8,3 +8,8 @@ Release/
 *.pdb
 *.ilk
 *.vcxproj.user 
+build/
+*.jsonl
+Source/Docs/
+service_run.png
+specs/

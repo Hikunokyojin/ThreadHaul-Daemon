@@ -11,7 +11,22 @@ ProcessStateMachine::ProcessStateMachine(std::wstring batchProcessName,
     : batchProcessName_(std::move(batchProcessName))
     , batchProcessId_(batchProcessId)
     , config_(config)
-    , onTransition_(std::move(onTransition)) {}
+    , onTransition_(std::move(onTransition)) {
+    processHandle_ = OpenProcess(SYNCHRONIZE, FALSE, batchProcessId_);
+}
+
+ProcessStateMachine::~ProcessStateMachine() {
+    if (processHandle_ != nullptr) {
+        CloseHandle(processHandle_);
+    }
+}
+
+bool ProcessStateMachine::HasExited() const {
+    if (processHandle_ == nullptr) {
+        return false;
+    }
+    return WaitForSingleObject(processHandle_, 0) == WAIT_OBJECT_0;
+}
 
 bool ProcessStateMachine::Update(double criticalProcessCpuPercent) {
     const ProcessState stateBefore = state_;
@@ -34,6 +49,10 @@ bool ProcessStateMachine::Update(double criticalProcessCpuPercent) {
         consecutiveLow_ = 0;
     }
 
+    if (manualHold_) {
+        return false;
+    }
+
     // --- state transitions ---
     if (state_ == ProcessState::Normal &&
         consecutiveHigh_ >= config_.throttleConsecutiveSamples) {
@@ -54,21 +73,40 @@ bool ProcessStateMachine::Update(double criticalProcessCpuPercent) {
 void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent) {
     const ProcessState oldState = state_;
 
-    switch (newState) {
-        case ProcessState::Throttled:
-            SetProcessPriority(batchProcessId_, PriorityLevel::Idle);
-            break;
+    bool actuationSucceeded = true;
 
-        case ProcessState::Suspended:
-            SuspendAllThreads(batchProcessId_);
-            break;
-
-        case ProcessState::Normal:
-            if (oldState == ProcessState::Suspended) {
-                ResumeAllThreads(batchProcessId_);
+    if (HasExited()) {
+        actuationSucceeded = false;
+    } else {
+        switch (newState) {
+            case ProcessState::Throttled: {
+                // Suspended -> Throttled only happens through a manual override.
+                bool resumed = true;
+                if (oldState == ProcessState::Suspended) {
+                    resumed = ResumeAllThreads(batchProcessId_).AllSucceeded();
+                }
+                actuationSucceeded =
+                    resumed && SetProcessPriority(batchProcessId_, PriorityLevel::Idle) ==
+                                   PriorityChangeResult::Success;
+                break;
             }
-            SetProcessPriority(batchProcessId_, PriorityLevel::Normal);
-            break;
+
+            case ProcessState::Suspended:
+                actuationSucceeded = SuspendAllThreads(batchProcessId_).AllSucceeded();
+                break;
+
+            case ProcessState::Normal: {
+                bool resumed = true;
+                if (oldState == ProcessState::Suspended) {
+                    resumed = ResumeAllThreads(batchProcessId_).AllSucceeded();
+                }
+                const bool restored =
+                    SetProcessPriority(batchProcessId_, PriorityLevel::Normal) ==
+                    PriorityChangeResult::Success;
+                actuationSucceeded = resumed && restored;
+                break;
+            }
+        }
     }
 
     state_ = newState;
@@ -78,11 +116,20 @@ void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent)
     consecutiveLow_ = 0;
 
     if (onTransition_) {
-        onTransition_(batchProcessName_, batchProcessId_, oldState, newState, cpuPercent);
+        onTransition_(batchProcessName_, batchProcessId_, oldState, newState, cpuPercent,
+                      actuationSucceeded);
+    }
+}
+
+void ProcessStateMachine::ForceState(ProcessState newState, double cpuPercent, bool hold) {
+    manualHold_ = hold;
+    if (state_ != newState) {
+        TransitionTo(newState, cpuPercent);
     }
 }
 
 void ProcessStateMachine::ForceRecoverForShutdown() {
+    manualHold_ = false;
     if (state_ == ProcessState::Normal) {
         return;
     }

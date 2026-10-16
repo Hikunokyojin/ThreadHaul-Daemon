@@ -34,13 +34,17 @@ ThreadOpResult SuspendAllThreads(DWORD processId) {
     const std::vector<DWORD> threadIds = EnumerateThreadIds(processId);
 
     for (DWORD tid : threadIds) {
-        result.threadsAttempted++;
-
         HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, tid);
         if (hThread == nullptr) {
-            result.threadsFailed++;
+            // ERROR_INVALID_PARAMETER means the thread exited after the
+            // snapshot was taken; that is not an actuation failure.
+            if (GetLastError() != ERROR_INVALID_PARAMETER) {
+                result.threadsAttempted++;
+                result.threadsFailed++;
+            }
             continue;
         }
+        result.threadsAttempted++;
 
         const DWORD suspendCount = SuspendThread(hThread);
         CloseHandle(hThread);
@@ -60,13 +64,17 @@ ThreadOpResult ResumeAllThreads(DWORD processId) {
     const std::vector<DWORD> threadIds = EnumerateThreadIds(processId);
 
     for (DWORD tid : threadIds) {
-        result.threadsAttempted++;
-
         HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME, FALSE, tid);
         if (hThread == nullptr) {
-            result.threadsFailed++;
+            // ERROR_INVALID_PARAMETER means the thread exited after the
+            // snapshot was taken; that is not an actuation failure.
+            if (GetLastError() != ERROR_INVALID_PARAMETER) {
+                result.threadsAttempted++;
+                result.threadsFailed++;
+            }
             continue;
         }
+        result.threadsAttempted++;
 
         const DWORD suspendCount = ResumeThread(hThread);
         CloseHandle(hThread);
