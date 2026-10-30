@@ -13,12 +13,13 @@
     - Starts it.
 
     Run from an elevated PowerShell:
-        powershell -ExecutionPolicy Bypass -File Source\Scripts\install.ps1
+        powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 .PARAMETER BinDir
-    Folder holding the built ThreadHaulDaemon.exe (default: <repo>\build).
+    Folder holding ThreadHaulDaemon.exe and dashboard\ (default: <repo>\build\bin
+    after build.cmd, or <package>\bin in a release zip).
 .PARAMETER ConfigSource
-    config.json to install (default: <repo>\Source\Config\config.json).
+    config.json to install (default: <repo>\config\config.example.json).
 .PARAMETER Account
     LocalSystem (default) or LocalService. LocalService is lower privilege but
     can only manage processes that also run as LocalService.
@@ -39,9 +40,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ServiceName = 'ThreadHaulDaemon'
-$Repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
-if (-not $BinDir) { $BinDir = Join-Path $Repo 'build' }
-if (-not $ConfigSource) { $ConfigSource = Join-Path $Repo 'Source\Config\config.json' }
+$Repo = Resolve-Path (Join-Path $PSScriptRoot '..')
+if (-not $BinDir) {
+    $BinDir = @((Join-Path $Repo 'build\bin'), (Join-Path $Repo 'bin')) |
+        Where-Object { Test-Path (Join-Path $_ 'ThreadHaulDaemon.exe') } | Select-Object -First 1
+    if (-not $BinDir) { throw 'ThreadHaulDaemon.exe not found. Run build.cmd first, or pass -BinDir.' }
+}
+if (-not $ConfigSource) { $ConfigSource = Join-Path $Repo 'config\config.example.json' }
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {

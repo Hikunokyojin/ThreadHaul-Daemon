@@ -260,7 +260,7 @@ void StateAndActionNames() {
     Check(std::string(logging::ActionName(ProcessState::Throttled)) == "priority_lowered" &&
               std::string(logging::ActionName(ProcessState::Suspended)) == "threads_suspended" &&
               std::string(logging::ActionName(ProcessState::Normal)) == "recovered",
-          __func__, "action names match INTERFACES.md 3.3");
+          __func__, "action names match the documented log schema");
     Check(std::string(logging::StateName(ProcessState::Normal)) == "normal", __func__, "state name");
 }
 

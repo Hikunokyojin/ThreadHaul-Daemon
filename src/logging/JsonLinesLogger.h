@@ -12,12 +12,12 @@
 
 namespace logging {
 
-// "priority_lowered", "threads_suspended" or "recovered" (INTERFACES.md 3.3).
+// "priority_lowered", "threads_suspended" or "recovered".
 const char* ActionName(actuator::ProcessState to);
 const char* StateName(actuator::ProcessState state);
 
-// Thread-safe JSON Lines writer for the three log kinds in INTERFACES.md
-// section 3. Each public method builds one complete line, so callers cannot
+// Thread-safe JSON Lines writer (log schema: README.md, Logs and monitoring).
+// Each public method builds one complete line, so callers cannot
 // produce an entry with a missing log_type/timestamp or a misnamed field.
 // Rotation is size-based: when the next line would push the file past
 // maxFileBytes, the file is renamed to <path>.1 (older ones shift to .2, ...)

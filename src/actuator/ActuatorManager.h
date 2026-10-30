@@ -30,12 +30,11 @@ public:
 
     void RemoveBatchProcess(DWORD processId);
 
-    // Stable public entry point for the Telemetry layer, per INTERFACES.md
-    // section 2 (CONFIRMED 2026-09-25). Telemetry calls this once per fired
-    // threshold; Actuator applies evt.observedCpuPercent to every batch
-    // process it currently manages. evt.criticalProcessId is not used to
-    // select which process gets throttled/suspended -- see INTERFACES.md
-    // section 2 for why.
+    // Entry point for callers that only have threshold events: applies
+    // evt.observedCpuPercent to every managed batch process (same as
+    // UpdateAll). evt.criticalProcessId is informational only; it is not
+    // the process that gets throttled. The service itself calls UpdateAll
+    // once per poll and does not also call this, to avoid double counting.
     void OnThresholdEvent(const ThresholdEvent& evt);
 
     // Returns true if any managed process changed state on this sample.

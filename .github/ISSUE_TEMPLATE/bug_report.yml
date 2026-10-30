@@ -1,0 +1,50 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Install with scripts\install.ps1
+        2. Assign ... as critical
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ThreadHaul version
+      placeholder: v1.0.0 or commit hash
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 23H2, Windows Server 2022, ...
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Running as
+      options:
+        - Installed Windows Service
+        - Console mode (--console)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl or the Application event log. Remove anything sensitive.
+      render: json

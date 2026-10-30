@@ -11,7 +11,8 @@ struct ThresholdSpec {
     int    consecutiveSamples = 0;
 };
 
-// Runtime configuration loaded from config.json. Schema: INTERFACES.md section 4.
+// Runtime configuration loaded from config.json. Every field and its valid
+// range is documented in README.md (Configuration) and enforced by ParseConfig.
 struct DaemonConfig {
     int pollIntervalMs = 1000;
 

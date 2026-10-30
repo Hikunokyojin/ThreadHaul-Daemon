@@ -79,7 +79,7 @@ void ActuatorManager::RemoveBatchProcess(DWORD processId) {
 }
 
 void ActuatorManager::OnThresholdEvent(const ThresholdEvent& evt) {
-    // See INTERFACES.md section 2: evt.criticalProcessId is informational
+    // evt.criticalProcessId is informational (see ActuatorManager.h)
     // context only. The actual state-machine input is the observed CPU%,
     // applied to every batch process this manager already owns.
     UpdateAll(evt.observedCpuPercent);

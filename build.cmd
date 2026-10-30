@@ -1,44 +1,48 @@
 @echo off
-rem Builds everything into build\ : the daemon, controller, both simulators
-rem and the unit tests. Works from any prompt; finds Visual Studio itself.
-rem   build.cmd          build all
-rem   build.cmd test     build all, then run the unit tests
+rem ThreadHaul build script (MSVC, no CMake required).
+rem   build.cmd          build everything into build\
+rem   build.cmd test     build, then run the unit tests
+rem Output:
+rem   build\bin\     ThreadHaulDaemon.exe, ThreadHaulController.exe, simulators,
+rem                  dashboard\ and a config.json for console runs
+rem   build\tests\   unit test executables
 setlocal
 set "ROOT=%~dp0"
-set "SRC=%ROOT%Source"
+set "SRC=%ROOT%src"
 set "THIRD=%ROOT%third_party"
 set "OUT=%ROOT%build"
+set "BIN=%OUT%\bin"
+set "TST=%OUT%\tests"
 set "OBJ=%OUT%\obj"
 
 where cl >nul 2>nul
 if errorlevel 1 call :find_vs || exit /b 1
-if not exist "%OBJ%" mkdir "%OBJ%"
+for %%d in ("%BIN%" "%TST%" "%OBJ%" "%BIN%\dashboard") do if not exist %%d mkdir %%d
 
-set CFLAGS=/nologo /std:c++17 /EHsc /W3 /O2 /MT /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX
-set INC=/I"%SRC%\Actuator" /I"%SRC%\Config" /I"%SRC%\Logging" /I"%SRC%\Telemetry" /I"%SRC%\Daemon" /I"%THIRD%"
+set CFLAGS=/nologo /std:c++17 /EHsc /W3 /O2 /MT /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX
+set INC=/I"%SRC%\actuator" /I"%SRC%\config" /I"%SRC%\logging" /I"%SRC%\telemetry" /I"%SRC%\service" /I"%THIRD%"
 set LIBS=advapi32.lib ws2_32.lib winhttp.lib wtsapi32.lib bcrypt.lib user32.lib shell32.lib
 
-set ACTUATOR="%SRC%\Actuator\StateMachine.cpp" "%SRC%\Actuator\ActuatorManager.cpp" "%SRC%\Actuator\PriorityControl.cpp" "%SRC%\Actuator\ThreadControl.cpp"
-set TELEMETRY="%SRC%\Telemetry\CpuMath.cpp" "%SRC%\Telemetry\ProcessMonitor.cpp" "%SRC%\Telemetry\AdaptiveThresholds.cpp" "%SRC%\Telemetry\ProcessTable.cpp" "%SRC%\Telemetry\ProcessSafety.cpp"
-set CONFIGLOG="%SRC%\Config\Config.cpp" "%SRC%\Logging\JsonLinesLogger.cpp" "%SRC%\Logging\EventLogWriter.cpp"
-set DAEMON="%SRC%\Daemon\Daemon.cpp" "%SRC%\Daemon\Alerts.cpp" "%SRC%\Daemon\ConfigSecurity.cpp" "%SRC%\Daemon\ControlPipe.cpp" "%SRC%\Daemon\Coordination.cpp" "%SRC%\Daemon\HttpServer.cpp" "%SRC%\Daemon\Dashboard.cpp" "%SRC%\Daemon\AutoProtect.cpp"
+set ACTUATOR="%SRC%\actuator\StateMachine.cpp" "%SRC%\actuator\ActuatorManager.cpp" "%SRC%\actuator\PriorityControl.cpp" "%SRC%\actuator\ThreadControl.cpp"
+set TELEMETRY="%SRC%\telemetry\CpuMath.cpp" "%SRC%\telemetry\ProcessMonitor.cpp" "%SRC%\telemetry\AdaptiveThresholds.cpp" "%SRC%\telemetry\ProcessTable.cpp" "%SRC%\telemetry\ProcessSafety.cpp"
+set CONFIGLOG="%SRC%\config\Config.cpp" "%SRC%\logging\JsonLinesLogger.cpp" "%SRC%\logging\EventLogWriter.cpp"
+set SERVICE="%SRC%\service\Daemon.cpp" "%SRC%\service\Alerts.cpp" "%SRC%\service\ConfigSecurity.cpp" "%SRC%\service\ControlPipe.cpp" "%SRC%\service\Coordination.cpp" "%SRC%\service\HttpServer.cpp" "%SRC%\service\Dashboard.cpp" "%SRC%\service\AutoProtect.cpp"
 
 echo [1/5] ThreadHaulDaemon.exe
-cl %CFLAGS% %INC% "%SRC%\main.cpp" %ACTUATOR% %TELEMETRY% %CONFIGLOG% %DAEMON% %LIBS% /Fo"%OBJ%\\" /Fe"%OUT%\ThreadHaulDaemon.exe" >"%OUT%\build.log" || goto :failed
+cl %CFLAGS% %INC% "%SRC%\service\main.cpp" %ACTUATOR% %TELEMETRY% %CONFIGLOG% %SERVICE% %LIBS% /Fo"%OBJ%\\" /Fe"%BIN%\ThreadHaulDaemon.exe" >"%OUT%\build.log" || goto :failed
 echo [2/5] ThreadHaulController.exe
-cl %CFLAGS% %INC% "%SRC%\Controller\controller.cpp" ws2_32.lib /Fo"%OBJ%\\" /Fe"%OUT%\ThreadHaulController.exe" >>"%OUT%\build.log" || goto :failed
-echo [3/5] critical_simulator.exe, batch_simulator.exe
-cl %CFLAGS% "%SRC%\Simulators\critical_simulator.cpp" /Fo"%OBJ%\\" /Fe"%OUT%\critical_simulator.exe" >>"%OUT%\build.log" || goto :failed
-cl %CFLAGS% "%SRC%\Simulators\batch_simulator.cpp" /Fo"%OBJ%\\" /Fe"%OUT%\batch_simulator.exe" >>"%OUT%\build.log" || goto :failed
+cl %CFLAGS% %INC% "%SRC%\controller\main.cpp" ws2_32.lib /Fo"%OBJ%\\" /Fe"%BIN%\ThreadHaulController.exe" >>"%OUT%\build.log" || goto :failed
+echo [3/5] simulators
+cl %CFLAGS% "%ROOT%tools\simulators\critical_simulator.cpp" /Fo"%OBJ%\\" /Fe"%BIN%\critical_simulator.exe" >>"%OUT%\build.log" || goto :failed
+cl %CFLAGS% "%ROOT%tools\simulators\batch_simulator.cpp" /Fo"%OBJ%\\" /Fe"%BIN%\batch_simulator.exe" >>"%OUT%\build.log" || goto :failed
 echo [4/5] unit tests
-cl %CFLAGS% %INC% "%SRC%\Tests\StateMachineTests.cpp" %ACTUATOR% advapi32.lib /Fo"%OBJ%\\" /Fe"%OUT%\StateMachineTests.exe" >>"%OUT%\build.log" || goto :failed
-cl %CFLAGS% %INC% "%SRC%\Tests\ConfigLoggingTests.cpp" "%SRC%\Config\Config.cpp" "%SRC%\Logging\JsonLinesLogger.cpp" /Fo"%OBJ%\\" /Fe"%OUT%\ConfigLoggingTests.exe" >>"%OUT%\build.log" || goto :failed
-cl %CFLAGS% %INC% "%SRC%\Tests\TelemetryTests.cpp" %TELEMETRY% advapi32.lib /Fo"%OBJ%\\" /Fe"%OUT%\TelemetryTests.exe" >>"%OUT%\build.log" || goto :failed
-echo [5/5] sample config and dashboard files
-copy /y "%SRC%\Config\config.json" "%OUT%\config.json" >nul
-if not exist "%OUT%\dashboard" mkdir "%OUT%\dashboard"
-copy /y "%SRC%\Dashboard\*" "%OUT%\dashboard\" >nul
-echo Build OK -^> %OUT%
+cl %CFLAGS% %INC% "%ROOT%tests\StateMachineTests.cpp" %ACTUATOR% advapi32.lib /Fo"%OBJ%\\" /Fe"%TST%\StateMachineTests.exe" >>"%OUT%\build.log" || goto :failed
+cl %CFLAGS% %INC% "%ROOT%tests\ConfigLoggingTests.cpp" "%SRC%\config\Config.cpp" "%SRC%\logging\JsonLinesLogger.cpp" /Fo"%OBJ%\\" /Fe"%TST%\ConfigLoggingTests.exe" >>"%OUT%\build.log" || goto :failed
+cl %CFLAGS% %INC% "%ROOT%tests\TelemetryTests.cpp" %TELEMETRY% advapi32.lib /Fo"%OBJ%\\" /Fe"%TST%\TelemetryTests.exe" >>"%OUT%\build.log" || goto :failed
+echo [5/5] dashboard and sample config
+copy /y "%ROOT%web\dashboard\*" "%BIN%\dashboard\" >nul
+copy /y "%ROOT%config\config.example.json" "%BIN%\config.json" >nul
+echo Build OK -^> %BIN%
 
 if /i "%~1"=="test" goto :test
 exit /b 0
@@ -47,7 +51,7 @@ exit /b 0
 set FAILED=0
 for %%t in (StateMachineTests TelemetryTests ConfigLoggingTests) do (
     echo [%%t]
-    "%OUT%\%%t.exe" || set FAILED=1
+    "%TST%\%%t.exe" || set FAILED=1
 )
 exit /b %FAILED%
 
@@ -59,7 +63,7 @@ exit /b 1
 :find_vs
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
-    echo Visual Studio not found. Install "Desktop development with C++".
+    echo Visual Studio not found. Install the "Desktop development with C++" workload.
     exit /b 1
 )
 for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VSINSTALL=%%i"

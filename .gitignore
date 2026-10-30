@@ -1,5 +1,6 @@
-﻿
-.vs/
+# Build output
+build/
+out/
 x64/
 Debug/
 Release/
@@ -7,9 +8,17 @@ Release/
 *.exe
 *.pdb
 *.ilk
-*.vcxproj.user 
-build/
+
+# IDE state
+.vs/
+.vscode/
+*.vcxproj.user
+CMakeUserPresets.json
+
+# Runtime artefacts
 *.jsonl
-Source/Docs/
-service_run.png
+*.png
+!docs/**/*.png
+
+# Local, non-repository material
 specs/

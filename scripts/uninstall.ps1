@@ -8,7 +8,7 @@
     the program files are removed. Config and logs in
     %ProgramData%\ThreadHaulDaemon are kept unless -RemoveData is given.
 
-        powershell -ExecutionPolicy Bypass -File Source\Scripts\uninstall.ps1 [-RemoveData]
+        powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 [-RemoveData]
 #>
 [CmdletBinding()]
 param([switch]$RemoveData)

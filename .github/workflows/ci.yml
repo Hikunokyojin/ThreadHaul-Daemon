@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cmake:
+    name: Build and test (CMake, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset windows-msvc
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Test
+        run: ctest --preset release
+
+  build-script:
+    name: Build and test (build.cmd)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run unit tests
+        shell: cmd
+        run: build.cmd test
+
+  lint:
+    name: Lint scripts and dashboard
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PowerShell scripts parse cleanly
+        shell: powershell
+        run: |
+          $failed = $false
+          foreach ($f in Get-ChildItem scripts -Filter *.ps1) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | ForEach-Object { Write-Error "$($f.Name): $_" }; $failed = $true }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Dashboard JavaScript syntax
+        run: node --check web/dashboard/app.js
+
+      - name: Log viewer compiles
+        run: python -m py_compile tools/log_viewer.py
