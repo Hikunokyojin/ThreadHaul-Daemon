@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ThreadHaul Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>ThreadHaul</h1>
+        <p class="subtitle">Resource monitor &amp; priority throttler</p>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="overview" role="tab">Overview</button>
+      <button class="tab" data-tab="processes" role="tab">Processes</button>
+      <button class="tab" data-tab="log" role="tab">Activity log</button>
+    </nav>
+    <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">Connecting…</span></div>
+  </header>
+
+  <div id="auth" class="auth hidden">
+    <div class="auth-card">
+      <h2>Access key required</h2>
+      <p>For security, the dashboard only accepts requests that carry this session's access key.</p>
+      <p>Open it from an <strong>Administrator</strong> PowerShell with:</p>
+      <pre>&amp; "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" dashboard</pre>
+      <p class="muted">The key changes every time the service restarts.</p>
+    </div>
+  </div>
+
+  <main id="app">
+    <!-- ============================== OVERVIEW ============================== -->
+    <section id="tab-overview" class="panel">
+      <div class="cards">
+        <div class="card" id="card-pressure">
+          <div class="card-label">Critical pressure</div>
+          <div class="card-value" id="kpi-pressure">–</div>
+          <div class="card-sub" id="kpi-pressure-sub">&nbsp;</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Thresholds (throttle / suspend / recover)</div>
+          <div class="card-value small" id="kpi-thresholds">–</div>
+          <div class="card-sub" id="kpi-thresholds-sub">&nbsp;</div>
+        </div>
+        <div class="card">
+          <div class="card-label">System CPU</div>
+          <div class="card-value" id="kpi-cpu">–</div>
+          <div class="meter"><span id="meter-cpu"></span></div>
+          <div class="card-sub" id="kpi-cpu-sub">&nbsp;</div>
+        </div>
+        <div class="card">
+          <div class="card-label">System memory</div>
+          <div class="card-value" id="kpi-mem">–</div>
+          <div class="meter"><span id="meter-mem"></span></div>
+          <div class="card-sub" id="kpi-mem-sub">&nbsp;</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Batch processes</div>
+          <div class="card-value" id="kpi-batch">–</div>
+          <div class="card-sub" id="kpi-batch-sub">&nbsp;</div>
+        </div>
+        <div class="card" id="card-auto">
+          <div class="card-label">Auto-protect</div>
+          <div class="card-value small" id="kpi-auto">–</div>
+          <div class="card-sub" id="kpi-auto-sub">&nbsp;</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Service</div>
+          <div class="card-value small" id="kpi-service">–</div>
+          <div class="card-sub" id="kpi-service-sub">&nbsp;</div>
+        </div>
+      </div>
+
+      <div class="box">
+        <div class="box-head">
+          <h2>Live pressure</h2>
+          <div class="legend">
+            <span><i class="sw sw-pressure"></i>Critical pressure</span>
+            <span><i class="sw sw-cpu"></i>System CPU</span>
+            <span><i class="sw sw-high"></i>Throttle</span>
+            <span><i class="sw sw-crit"></i>Suspend</span>
+            <span><i class="sw sw-low"></i>Recover</span>
+            <span><i class="sw sw-susp"></i>A batch process suspended</span>
+            <span><i class="sw sw-auto"></i>Auto-protect active</span>
+          </div>
+        </div>
+        <canvas id="chart" height="260"></canvas>
+        <p class="muted small-note">Last 5 minutes, sampled every second while this page is open.</p>
+      </div>
+
+      <div class="box" id="auto-box">
+        <div class="box-head">
+          <h2>Auto-protect: automatically throttled programs</h2>
+          <span class="muted small-note" id="auto-rule"></span>
+        </div>
+        <p class="hint">
+          When the whole computer stays overloaded, ThreadHaul lowers the priority of the ordinary applications using the most
+          CPU so that Windows and your other programs stay responsive. Programs are never paused, and each one gets its original
+          priority back when the load drops. Windows components, services and any program you have given a role are never
+          selected. <strong>Restore</strong> puts a program back now and leaves it alone until it exits.
+        </p>
+        <table class="table">
+          <thead><tr><th>Program</th><th>PID</th><th>Priority</th><th class="num">CPU % when throttled</th><th class="num">For</th><th class="actions-col">Action</th></tr></thead>
+          <tbody id="auto-body"></tbody>
+        </table>
+        <p class="empty hidden" id="auto-empty">Nothing is throttled. The system is within normal load.</p>
+      </div>
+
+      <div class="grid2">
+        <div class="box">
+          <div class="box-head"><h2>Critical processes</h2></div>
+          <table class="table">
+            <thead><tr><th>Process</th><th>PID</th><th class="num">CPU %</th></tr></thead>
+            <tbody id="critical-body"></tbody>
+          </table>
+          <p class="empty hidden" id="critical-empty">No critical process is running. Assign one on the <a href="#" data-goto="processes">Processes</a> tab.</p>
+        </div>
+        <div class="box">
+          <div class="box-head"><h2>Batch processes</h2></div>
+          <table class="table">
+            <thead><tr><th>Process</th><th>PID</th><th>State</th><th class="actions-col">Actions</th></tr></thead>
+            <tbody id="batch-body"></tbody>
+          </table>
+          <p class="empty hidden" id="batch-empty">No batch process is running. Assign one on the <a href="#" data-goto="processes">Processes</a> tab.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================== PROCESSES ============================== -->
+    <section id="tab-processes" class="panel hidden">
+      <div class="box">
+        <div class="box-head">
+          <h2>Running processes</h2>
+          <div class="toolbar">
+            <input type="search" id="proc-search" placeholder="Search name or PID" autocomplete="off">
+            <select id="proc-role-filter">
+              <option value="all">All roles</option>
+              <option value="critical">Critical</option>
+              <option value="batch">Batch</option>
+              <option value="protected">Protected</option>
+              <option value="none">Unassigned</option>
+            </select>
+            <label class="check"><input type="checkbox" id="proc-show-system"> Show Windows &amp; system processes</label>
+            <label class="check"><input type="checkbox" id="proc-pause"> Pause updates</label>
+          </div>
+        </div>
+        <p class="hint">
+          Choose a <strong>role</strong> to put a program under control. <strong>Critical</strong> programs are protected;
+          <strong>batch</strong> programs are slowed and paused when a critical program is starved;
+          <strong>protected</strong> programs are never touched. Roles apply to every process with that name and are saved to the
+          configuration immediately.
+        </p>
+        <div class="safety-legend">
+          <span><span class="badge safety-essential">Essential</span> Windows cannot run without it. It can never be managed.</span>
+          <span><span class="badge safety-system">System process</span> Part of Windows, or a process Windows protects from inspection. Hidden unless you choose to show it; managing it asks for confirmation.</span>
+          <span><span class="badge safety-service">Background service</span> Runs as a system account. Other programs may depend on it; managing it asks for confirmation.</span>
+        </div>
+        <div class="table-wrap">
+          <table class="table sortable" id="proc-table">
+            <thead>
+              <tr>
+                <th data-sort="name">Process</th>
+                <th data-sort="pid" class="num">PID</th>
+                <th data-sort="cpu" class="num sorted-desc">CPU %</th>
+                <th data-sort="mem" class="num">Memory</th>
+                <th data-sort="safety">Safety</th>
+                <th data-sort="role">Role</th>
+                <th>State</th>
+                <th class="actions-col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="proc-body"></tbody>
+          </table>
+        </div>
+        <p class="muted small-note" id="proc-hidden"></p>
+        <p class="muted small-note" id="proc-footer">&nbsp;</p>
+      </div>
+    </section>
+
+    <!-- ============================== LOG ============================== -->
+    <section id="tab-log" class="panel hidden">
+      <div class="box">
+        <div class="box-head">
+          <h2>Activity log</h2>
+          <div class="toolbar">
+            <input type="search" id="log-search" placeholder="Search process, event, details" autocomplete="off">
+            <label class="field">From <input type="datetime-local" id="log-from" step="1"></label>
+            <label class="field">To <input type="datetime-local" id="log-to" step="1"></label>
+            <label class="check"><input type="checkbox" id="log-hide-samples" checked> Hide samples</label>
+            <label class="check"><input type="checkbox" id="log-live" checked> Live</label>
+            <button class="btn" id="log-export">Export CSV</button>
+          </div>
+        </div>
+        <div class="chips" id="log-types"></div>
+        <div class="table-wrap">
+          <table class="table log-table">
+            <thead>
+              <tr><th class="time-col">Time</th><th>Event</th><th>Process</th><th>Details</th><th class="num">CPU %</th></tr>
+            </thead>
+            <tbody id="log-body"></tbody>
+          </table>
+        </div>
+        <p class="muted small-note" id="log-footer">&nbsp;</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-card">
+      <h2 id="modal-title">Are you sure?</h2>
+      <p id="modal-body"></p>
+      <p class="modal-reason" id="modal-reason"></p>
+      <div class="modal-actions">
+        <button class="btn" id="modal-cancel">Cancel</button>
+        <button class="btn btn-danger-solid" id="modal-ok">Continue</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

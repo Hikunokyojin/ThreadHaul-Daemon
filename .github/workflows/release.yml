@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build a release for (e.g. v1.0.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Configure
+        run: cmake --preset windows-msvc
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Test
+        run: ctest --preset release
+
+      - name: Package
+        shell: powershell
+        run: |
+          $name = "ThreadHaul-$env:TAG-win-x64"
+          $stage = "out\package\$name"
+          cmake --install out\build --config Release --prefix $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath "out\package\$name.zip" -Force
+          $hash = (Get-FileHash "out\package\$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Set-Content "out\package\$name.zip.sha256" -Encoding ascii
+          "ZIP=out\package\$name.zip" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Release notes from CHANGELOG.md
+        shell: powershell
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## \[$([regex]::Escape($version))\]" | Select-Object -First 1).LineNumber
+          if (-not $start) { throw "CHANGELOG.md has no section for $version" }
+          $notes = @()
+          for ($i = $start; $i -lt $lines.Count -and $lines[$i] -notmatch '^## \['; $i++) { $notes += $lines[$i] }
+          $notes | Set-Content release-notes.md -Encoding utf8
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:TAG $env:ZIP "$env:ZIP.sha256" --title "ThreadHaul $env:TAG" --notes-file release-notes.md
