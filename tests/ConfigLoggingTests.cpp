@@ -2,12 +2,14 @@
 
 #include "Config.h"
 #include "JsonLinesLogger.h"
+#include "LogChain.h"
 
 #include <nlohmann/json.hpp>
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -399,6 +401,73 @@ void SetsProcessRoles() {
     Check(threw, __func__, "path rejected");
 }
 
+std::vector<std::string> RawLines(const fs::path& file) {
+    std::vector<std::string> out;
+    std::ifstream in(file, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) out.push_back(line);
+    return out;
+}
+
+logging::ChainReport VerifyText(const std::vector<std::string>& lines,
+                                const std::string& expectedFirst = "") {
+    std::string text;
+    for (const auto& l : lines) text += l + "\n";
+    std::istringstream in(text);
+    return logging::VerifyChain(in, expectedFirst);
+}
+
+void HashChainDetectsTampering(const fs::path& dir) {
+    const char* t = "HashChainDetectsTampering";
+    const fs::path file = dir / "chain.jsonl";
+    {
+        // Lines from before chaining existed, then a chained logger appends.
+        std::ofstream old(file, std::ios::binary);
+        old << "{\"log_type\":\"lifecycle\",\"n\":1}\n{\"log_type\":\"lifecycle\",\"n\":2}\n";
+    }
+    for (int run = 0; run < 2; ++run) {  // two loggers: the chain continues across restarts
+        logging::JsonLinesLogger log(file.wstring(), 1024 * 1024, 3);
+        for (int i = 0; i < 3; ++i) log.LogSample(100 + i, 1.0);
+    }
+    auto lines = RawLines(file);
+    Check(lines.size() == 8, t, "8 lines written");
+    if (lines.size() != 8) return;
+    auto r = VerifyText(lines);
+    Check(r.Ok() && r.chained == 6 && r.unchained == 2, t, "intact chain verifies: " + r.message);
+
+    auto edited = lines;
+    const size_t pos = edited[4].find("\"process_id\":102");
+    Check(pos != std::string::npos, t, "found line to edit");
+    if (pos != std::string::npos) edited[4].replace(pos, 16, "\"process_id\":999");
+    r = VerifyText(edited);
+    Check(!r.Ok() && r.brokenLine == 6, t, "edited line breaks the next link");
+
+    auto removed = lines;
+    removed.erase(removed.begin() + 5);
+    Check(VerifyText(removed).brokenLine == 6, t, "removed line breaks the chain");
+
+    auto stripped = lines;
+    stripped[6] = "{\"log_type\":\"sample\"}";
+    Check(VerifyText(stripped).brokenLine == 7, t, "line without prev_hash after the chain started");
+
+    Check(VerifyText({"not json"}).brokenLine == 1, t, "garbage line rejected");
+}
+
+void HashChainSpansRotation(const fs::path& dir) {
+    const char* t = "HashChainSpansRotation";
+    const fs::path file = dir / "chainrot.jsonl";
+    {
+        logging::JsonLinesLogger log(file.wstring(), 400, 3);
+        for (int i = 0; i < 12; ++i) log.LogSample(2000 + i, 5.0);
+    }
+    const std::string older = file.string() + ".1";
+    Check(fs::exists(older), t, "rotated file exists");
+    const std::string link = logging::LastLineHash(fs::path(older).wstring());
+    Check(VerifyText(RawLines(file), link).Ok(), t, "current file links to the end of .1");
+    Check(!VerifyText(RawLines(file), logging::kGenesisHash).Ok(), t,
+          "wrong predecessor is detected");
+}
+
 }
 
 int main() {
@@ -426,6 +495,8 @@ int main() {
     ParsesOptionalSections();
     RejectsBadOptionalSections();
     LogsGenericEventsAndTrigger(dir);
+    HashChainDetectsTampering(dir);
+    HashChainSpansRotation(dir);
     std::error_code ec;
     fs::remove_all(dir, ec);
 

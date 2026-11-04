@@ -38,6 +38,7 @@ add_library(threadhaul_core STATIC
     src/config/Config.cpp
     src/logging/EventLogWriter.cpp
     src/logging/JsonLinesLogger.cpp
+    src/logging/LogChain.cpp
     src/service/Alerts.cpp
     src/service/AutoProtect.cpp
     src/service/ConfigSecurity.cpp

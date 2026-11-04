@@ -25,7 +25,7 @@ set LIBS=advapi32.lib ws2_32.lib winhttp.lib wtsapi32.lib bcrypt.lib user32.lib 
 
 set ACTUATOR="%SRC%\actuator\StateMachine.cpp" "%SRC%\actuator\ActuatorManager.cpp" "%SRC%\actuator\PriorityControl.cpp" "%SRC%\actuator\ThreadControl.cpp"
 set TELEMETRY="%SRC%\telemetry\CpuMath.cpp" "%SRC%\telemetry\ProcessMonitor.cpp" "%SRC%\telemetry\AdaptiveThresholds.cpp" "%SRC%\telemetry\ProcessTable.cpp" "%SRC%\telemetry\ProcessSafety.cpp"
-set CONFIGLOG="%SRC%\config\Config.cpp" "%SRC%\logging\JsonLinesLogger.cpp" "%SRC%\logging\EventLogWriter.cpp"
+set CONFIGLOG="%SRC%\config\Config.cpp" "%SRC%\logging\JsonLinesLogger.cpp" "%SRC%\logging\LogChain.cpp" "%SRC%\logging\EventLogWriter.cpp"
 set SERVICE="%SRC%\service\Daemon.cpp" "%SRC%\service\Alerts.cpp" "%SRC%\service\ConfigSecurity.cpp" "%SRC%\service\ControlPipe.cpp" "%SRC%\service\Coordination.cpp" "%SRC%\service\HttpServer.cpp" "%SRC%\service\Dashboard.cpp" "%SRC%\service\AutoProtect.cpp" "%SRC%\common\SecureChannel.cpp"
 
 echo [1/5] ThreadHaulDaemon.exe
@@ -37,7 +37,7 @@ cl %CFLAGS% "%ROOT%tools\simulators\critical_simulator.cpp" /Fo"%OBJ%\\" /Fe"%BI
 cl %CFLAGS% "%ROOT%tools\simulators\batch_simulator.cpp" /Fo"%OBJ%\\" /Fe"%BIN%\batch_simulator.exe" >>"%OUT%\build.log" || goto :failed
 echo [4/5] unit tests
 cl %CFLAGS% %INC% "%ROOT%tests\StateMachineTests.cpp" %ACTUATOR% advapi32.lib /Fo"%OBJ%\\" /Fe"%TST%\StateMachineTests.exe" >>"%OUT%\build.log" || goto :failed
-cl %CFLAGS% %INC% "%ROOT%tests\ConfigLoggingTests.cpp" "%SRC%\config\Config.cpp" "%SRC%\logging\JsonLinesLogger.cpp" /Fo"%OBJ%\\" /Fe"%TST%\ConfigLoggingTests.exe" >>"%OUT%\build.log" || goto :failed
+cl %CFLAGS% %INC% "%ROOT%tests\ConfigLoggingTests.cpp" "%SRC%\config\Config.cpp" "%SRC%\logging\JsonLinesLogger.cpp" "%SRC%\logging\LogChain.cpp" "%SRC%\common\SecureChannel.cpp" ws2_32.lib bcrypt.lib /Fo"%OBJ%\\" /Fe"%TST%\ConfigLoggingTests.exe" >>"%OUT%\build.log" || goto :failed
 cl %CFLAGS% %INC% "%ROOT%tests\SecurityTests.cpp" "%SRC%\common\SecureChannel.cpp" ws2_32.lib bcrypt.lib /Fo"%OBJ%\\" /Fe"%TST%\SecurityTests.exe" >>"%OUT%\build.log" || goto :failed
 cl %CFLAGS% %INC% "%ROOT%tests\TelemetryTests.cpp" %TELEMETRY% advapi32.lib /Fo"%OBJ%\\" /Fe"%TST%\TelemetryTests.exe" >>"%OUT%\build.log" || goto :failed
 echo [5/5] dashboard and sample config

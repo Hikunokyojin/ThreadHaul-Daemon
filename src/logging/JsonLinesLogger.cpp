@@ -1,4 +1,5 @@
 #include "JsonLinesLogger.h"
+#include "LogChain.h"
 
 #include <nlohmann/json.hpp>
 
@@ -134,11 +135,11 @@ bool JsonLinesLogger::LogEvent(const char* logType, const ordered_json& fields) 
 
 bool JsonLinesLogger::WriteLine(const std::string& line) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const std::string data = line + "\n";
-
     if (!EnsureOpen()) {
         return false;
     }
+    const std::string chained = ChainLine(line, lastHash_);
+    const std::string data = chained + "\n";
     if (currentSize_ > 0 && currentSize_ + data.size() > maxFileBytes_) {
         Rotate();
         if (!EnsureOpen()) {
@@ -152,12 +153,18 @@ bool JsonLinesLogger::WriteLine(const std::string& line) {
         return false;
     }
     currentSize_ += written;
+    lastHash_ = LineHash(chained);
     return true;
 }
 
 bool JsonLinesLogger::EnsureOpen() {
     if (file_ != INVALID_HANDLE_VALUE) {
         return true;
+    }
+    if (lastHash_.empty()) {
+        // Continue the chain from whatever is already in the file.
+        lastHash_ = LastLineHash(path_);
+        if (lastHash_.empty()) lastHash_ = kGenesisHash;
     }
     std::error_code ec;
     const std::filesystem::path parent = std::filesystem::path(path_).parent_path();
