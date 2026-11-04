@@ -22,6 +22,7 @@
       <button class="tab" data-tab="log" role="tab">Activity log</button>
     </nav>
     <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">Connecting…</span></div>
+    <button class="btn" id="signout" type="button" title="End this dashboard session">Sign out</button>
   </header>
 
   <div id="auth" class="auth hidden">
@@ -30,7 +31,7 @@
       <p>For security, the dashboard only accepts requests that carry this session's access key.</p>
       <p>Open it from an <strong>Administrator</strong> PowerShell with:</p>
       <pre>&amp; "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" dashboard</pre>
-      <p class="muted">The key changes every time the service restarts.</p>
+      <p class="muted" id="auth-reason">The key changes every time the service restarts, expires after 30 minutes without use or 12 hours in total, and ends when you sign out.</p>
     </div>
   </div>
 

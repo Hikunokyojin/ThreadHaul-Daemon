@@ -12,6 +12,9 @@
 
   // ------------------------------------------------------------ token
   let token = null;
+  // After the first rejection, stop polling: resending a dead key would count
+  // toward the service's bad-token lockout. Opening a new link reloads the page.
+  let authFailed = false;
   const hash = new URLSearchParams(location.hash.slice(1));
   if (hash.get("token")) {
     token = hash.get("token");
@@ -29,11 +32,25 @@
     return e;
   };
 
-  function showAuth() {
+  function showAuth(reason) {
+    if (reason) $("auth-reason").textContent = reason;
     $("auth").classList.remove("hidden");
     $("app").classList.add("hidden");
     setConn("bad", "Not authorised");
   }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const b = $("signout");
+    if (!b) return;
+    b.addEventListener("click", async () => {
+      try { await api("/api/logout", {}); } catch (e) { /* already signed out */ }
+      token = "";
+      authFailed = true;
+      try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* storage blocked */ }
+      history.replaceState(null, "", "/");
+      showAuth("You signed out. Run the dashboard command again to start a new session.");
+    });
+  });
 
   function setConn(kind, text) {
     const c = $("conn");
@@ -78,15 +95,23 @@
   const SAFETY_PHRASE = { system: "a system process (part of Windows, or protected by it)", service: "a background service" };
 
   async function api(path, body) {
-    const opts = { headers: { "X-ThreadHaul-Token": token || "" }, cache: "no-store" };
+    if (authFailed || !token) {
+      if (!authFailed) { authFailed = true; showAuth(); }
+      throw new Error("unauthorised");
+    }
+    const opts = { headers: { "X-ThreadHaul-Token": token }, cache: "no-store" };
     if (body !== undefined) {
       opts.method = "POST";
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
     const res = await fetch(path, opts);
-    if (res.status === 401) {
-      showAuth();
+    if (res.status === 401 || res.status === 429) {
+      let msg = "";
+      try { msg = (await res.json()).message || ""; } catch (e) { /* no body */ }
+      authFailed = true;
+      try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* storage blocked */ }
+      if (path !== "/api/logout") showAuth(msg);
       throw new Error("unauthorised");
     }
     const data = await res.json();

@@ -60,7 +60,7 @@ HttpResponse Error(int status, const std::string& message) {
 
 }
 
-Dashboard::Dashboard(Daemon& daemon) : daemon_(daemon), token_(RandomToken()) {
+Dashboard::Dashboard(Daemon& daemon) : daemon_(daemon), session_(RandomToken) {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     root_ = (std::filesystem::path(exe).parent_path() / L"dashboard").wstring();
@@ -90,7 +90,7 @@ void Dashboard::Stop() {
 }
 
 std::string Dashboard::Url() const {
-    return "http://127.0.0.1:" + std::to_string(port_) + "/#token=" + token_;
+    return "http://127.0.0.1:" + std::to_string(port_) + "/#token=" + session_.CurrentOrNewKey();
 }
 
 bool Dashboard::Authorized(const HttpRequest& req, HttpResponse& res) const {
@@ -117,9 +117,21 @@ HttpResponse Dashboard::Handle(const HttpRequest& req) {
         if (req.method != "GET") return Error(405, "method not allowed");
         return ServeFile(req.path == "/" ? "/index.html" : req.path);
     }
-    if (!ConstantTimeEquals(req.Header("x-threadhaul-token"), token_)) {
+    switch (session_.Check(req.Header("x-threadhaul-token"))) {
+    case SessionGuard::Result::Ok:
+        break;
+    case SessionGuard::Result::Locked:
+        return Error(429, "too many invalid tokens; try again in a minute");
+    case SessionGuard::Result::Expired:
+        return Error(401, "dashboard session expired; run 'ThreadHaulDaemon.exe dashboard' "
+                          "for a new link");
+    default:
         return Error(401, "missing or invalid dashboard token; open the dashboard with "
                           "'ThreadHaulDaemon.exe dashboard'");
+    }
+    if (req.method == "POST" && req.path == "/api/logout") {
+        session_.Revoke();
+        return Json(200, json{{"ok", true}, {"message", "signed out"}});
     }
 
     if (req.method == "GET" && req.path == "/api/status") {

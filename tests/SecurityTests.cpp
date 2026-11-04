@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "SecureChannel.h"
+#include "SessionGuard.h"
 
 using namespace securechannel;
 
@@ -174,6 +175,52 @@ void OversizedFrameRejected() {
     closesocket(b);
 }
 
+void DashboardSessions() {
+    using G = daemon::SessionGuard;
+    using namespace std::chrono;
+    const char* t = "DashboardSessions";
+    G::Clock::time_point now{};
+    int issued = 0;
+    G::Limits lim;
+    lim.idle = seconds(30);
+    lim.absolute = seconds(100);
+    lim.maxFailures = 3;
+    lim.failureWindow = seconds(10);
+    lim.lockout = seconds(20);
+    G g([&] { return "key" + std::to_string(++issued); }, lim, [&] { return now; });
+
+    Check(g.Check("key1") == G::Result::Invalid, t, "no key accepted before one is issued");
+    const std::string k = g.CurrentOrNewKey();
+    Check(k == "key1" && g.CurrentOrNewKey() == k, t, "live key is reused");
+    Check(g.Check(k) == G::Result::Ok, t, "valid key accepted");
+
+    now += seconds(25);
+    Check(g.Check(k) == G::Result::Ok, t, "use within idle window keeps the session");
+    now += seconds(31);
+    Check(g.Check(k) == G::Result::Expired, t, "idle session expires");
+    Check(g.Check(k) == G::Result::Invalid, t, "expired key stays dead");
+    const std::string k2 = g.CurrentOrNewKey();
+    Check(k2 != k, t, "new key issued after expiry");
+
+    for (int i = 0; i < 4; ++i) { now += seconds(20); g.Check(k2); }
+    Check(g.Check(k2) == G::Result::Ok, t, "active session survives past the idle window");
+    now += seconds(25);
+    Check(g.Check(k2) == G::Result::Expired, t, "absolute lifetime enforced despite activity");
+
+    const std::string k3 = g.CurrentOrNewKey();
+    g.Revoke();
+    Check(g.Check(k3) == G::Result::Invalid, t, "sign-out revokes the key");
+
+    now += seconds(30);  // let earlier failures age out of the window
+    const std::string k4 = g.CurrentOrNewKey();
+    g.Check("bad");
+    g.Check("bad");
+    Check(g.Check("bad") == G::Result::Locked, t, "repeated bad keys lock the API");
+    Check(g.Check(k4) == G::Result::Locked, t, "lockout applies to the valid key too");
+    now += seconds(21);
+    Check(g.Check(k4) == G::Result::Ok, t, "lockout ends");
+}
+
 }
 
 int main() {
@@ -185,6 +232,7 @@ int main() {
     ShortSecretRefused();
     TamperedAndReplayedFramesRejected();
     OversizedFrameRejected();
+    DashboardSessions();
     WSACleanup();
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
