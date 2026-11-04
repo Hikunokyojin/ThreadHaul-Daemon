@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -29,8 +30,10 @@ std::string Narrow(const std::wstring& w) {
 }
 
 std::string RandomToken() {
-    unsigned char bytes[24];
-    BCryptGenRandom(nullptr, bytes, sizeof(bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    unsigned char bytes[24] = {};
+    if (BCryptGenRandom(nullptr, bytes, sizeof(bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        std::abort();  // never hand out a predictable dashboard key
+    }
     static const char* hex = "0123456789abcdef";
     std::string t;
     for (unsigned char b : bytes) {

@@ -65,6 +65,21 @@ bool UnprotectSecret(const std::string& value, std::string& plaintext, std::stri
     std::vector<BYTE> blob(bytes);
     CryptStringToBinaryA(b64.c_str(), static_cast<DWORD>(b64.size()), CRYPT_STRING_BASE64,
                          blob.data(), &bytes, nullptr, nullptr);
+    // The Windows decoder skips whitespace and stray characters; accept only
+    // the exact text ProtectSecret produces, so an edited value is rejected.
+    DWORD chars = 0;
+    std::string canonical;
+    if (CryptBinaryToStringA(blob.data(), bytes, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr, &chars)) {
+        canonical.resize(chars);
+        if (CryptBinaryToStringA(blob.data(), bytes, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF,
+                                 canonical.data(), &chars)) {
+            canonical.resize(chars);
+        }
+    }
+    if (canonical != b64) {
+        error = "not in the exact form protect-secret prints (was it edited?)";
+        return false;
+    }
     DATA_BLOB in{bytes, blob.data()};
     DATA_BLOB entropy = Entropy();
     DATA_BLOB out{};

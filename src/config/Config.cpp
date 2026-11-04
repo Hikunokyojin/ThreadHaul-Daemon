@@ -189,7 +189,9 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
     json root;
     try {
         root = json::parse(jsonText);
-    } catch (const json::parse_error& e) {
+    } catch (const json::exception& e) {
+        // parse_error, and out_of_range for numbers such as 1e309: both are
+        // bad input and must surface as ConfigError, never escape uncaught.
         throw ConfigError(std::string("config is not valid JSON: ") + e.what());
     }
     if (!root.is_object()) {

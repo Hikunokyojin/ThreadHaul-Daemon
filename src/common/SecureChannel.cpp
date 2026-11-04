@@ -3,6 +3,9 @@
 #include <windows.h>
 #include <bcrypt.h>
 
+#include <cstdio>
+#include <cstdlib>
+
 #include <nlohmann/json.hpp>
 
 namespace securechannel {
@@ -23,10 +26,12 @@ std::string Hash(const std::string& key, const std::string& data, bool hmac) {
     if (BCryptCreateHash(alg, &h, nullptr, 0,
                          hmac ? reinterpret_cast<PUCHAR>(const_cast<char*>(key.data())) : nullptr,
                          hmac ? static_cast<ULONG>(key.size()) : 0, 0) == 0) {
-        BCryptHashData(h, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
-                       static_cast<ULONG>(data.size()), 0);
-        BCryptFinishHash(h, reinterpret_cast<PUCHAR>(out.data()), 32, 0);
+        const bool ok =
+            BCryptHashData(h, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+                           static_cast<ULONG>(data.size()), 0) == 0 &&
+            BCryptFinishHash(h, reinterpret_cast<PUCHAR>(out.data()), 32, 0) == 0;
         BCryptDestroyHash(h);
+        if (!ok) out.clear();
     } else {
         out.clear();
     }
@@ -98,8 +103,13 @@ bool AesGcmDecrypt(const std::string& key, const std::string& nonce,
 
 std::string RandomBytes(size_t n) {
     std::string out(n, '\0');
-    BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(out.data()), static_cast<ULONG>(n),
-                    BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(out.data()), static_cast<ULONG>(n),
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        // Predictable keys or nonces would silently break every guarantee;
+        // stopping is the only safe answer.
+        std::fprintf(stderr, "fatal: the system random number generator failed\n");
+        std::abort();
+    }
     return out;
 }
 

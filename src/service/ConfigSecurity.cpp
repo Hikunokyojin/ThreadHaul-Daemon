@@ -72,15 +72,16 @@ std::string Sha256File(const std::wstring& path) {
     std::string hex;
     if (BCryptCreateHash(alg, &hash, nullptr, 0, nullptr, 0, 0) == 0) {
         std::vector<char> buf(64 * 1024);
-        while (in) {
+        bool ok = true;
+        while (in && ok) {
             in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
             const auto n = in.gcount();
             if (n > 0) {
-                BCryptHashData(hash, reinterpret_cast<PUCHAR>(buf.data()), static_cast<ULONG>(n), 0);
+                ok = BCryptHashData(hash, reinterpret_cast<PUCHAR>(buf.data()), static_cast<ULONG>(n), 0) == 0;
             }
         }
         UCHAR digest[32];
-        if (BCryptFinishHash(hash, digest, sizeof(digest), 0) == 0) {
+        if (ok && BCryptFinishHash(hash, digest, sizeof(digest), 0) == 0) {
             static const char* digits = "0123456789abcdef";
             for (UCHAR b : digest) {
                 hex += digits[b >> 4];

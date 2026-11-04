@@ -870,8 +870,10 @@ std::string Daemon::ReadLog(long long offset) {
     LARGE_INTEGER pos;
     pos.QuadPart = start;
     if (length > 0) {
-        SetFilePointerEx(h, pos, nullptr, FILE_BEGIN);
-        ReadFile(h, buf.data(), static_cast<DWORD>(length), &read, nullptr);
+        if (!SetFilePointerEx(h, pos, nullptr, FILE_BEGIN) ||
+            !ReadFile(h, buf.data(), static_cast<DWORD>(length), &read, nullptr)) {
+            read = 0;  // report nothing new rather than stale buffer contents
+        }
     }
     CloseHandle(h);
     buf.resize(read);

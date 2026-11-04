@@ -295,7 +295,10 @@ int main(int argc, char* argv[]) {
     g_log.open(logPath, std::ios::app);
 
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        std::fprintf(stderr, "cannot initialise networking (error %d)\n", WSAGetLastError());
+        return 1;
+    }
     SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in addr{};
     addr.sin_family = AF_INET;

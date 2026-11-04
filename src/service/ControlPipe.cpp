@@ -112,11 +112,11 @@ bool SendControlRequest(const std::string& request, std::string& response, DWORD
                         nullptr) != FALSE;
     response.clear();
     if (ok) {
-        char buf[64 * 1024];
+        std::vector<char> buf(64 * 1024);  // heap, not 64 KB of stack
         DWORD read = 0;
         while (true) {
-            const BOOL r = ReadFile(pipe, buf, sizeof(buf), &read, nullptr);
-            response.append(buf, read);
+            const BOOL r = ReadFile(pipe, buf.data(), static_cast<DWORD>(buf.size()), &read, nullptr);
+            response.append(buf.data(), read);
             if (r || GetLastError() != ERROR_MORE_DATA) {
                 ok = r != FALSE;
                 break;
