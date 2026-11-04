@@ -39,6 +39,7 @@ add_library(threadhaul_core STATIC
     src/logging/EventLogWriter.cpp
     src/logging/JsonLinesLogger.cpp
     src/logging/LogChain.cpp
+    src/config/Secrets.cpp
     src/service/Alerts.cpp
     src/service/AutoProtect.cpp
     src/service/ConfigSecurity.cpp
@@ -52,7 +53,7 @@ add_library(threadhaul_core STATIC
 target_include_directories(threadhaul_core PUBLIC
     src/actuator src/telemetry src/config src/logging src/service src/common third_party)
 target_link_libraries(threadhaul_core PUBLIC
-    advapi32 ws2_32 winhttp wtsapi32 bcrypt user32 shell32)
+    advapi32 ws2_32 winhttp wtsapi32 bcrypt crypt32 user32 shell32)
 
 # --------------------------------------------------------------------------
 # Executables

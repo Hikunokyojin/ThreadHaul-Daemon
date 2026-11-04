@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "ControlPipe.h"
 #include "Daemon.h"
 #include "LogChain.h"
+#include "Secrets.h"
 #include "PriorityControl.h"
 #include "ThreadControl.h"
 #include "ProcessMonitor.h"
@@ -192,7 +194,9 @@ void PrintUsage() {
         L"  ThreadHaulDaemon.exe [--config <path>]\n"
         L"      Entry point used by the Windows Service (install with scripts\\install.ps1).\n"
         L"  ThreadHaulDaemon.exe validate-config [<path>]\n"
-        L"  ThreadHaulDaemon.exe verify-log [<log path>]  check the log's hash chain for tampering\n\n"
+        L"  ThreadHaulDaemon.exe verify-log [<log path>]  check the log's hash chain for tampering\n"
+        L"  ThreadHaulDaemon.exe protect-secret        encrypt a token or webhook URL for the config\n"
+        L"      (reads the secret from input; paste the printed dpapi:... value into the config)\n\n"
         L"Manual override (talks to the running daemon; needs Administrator):\n"
         L"  ThreadHaulDaemon.exe throttle <pid|name>   demote to IDLE priority and hold\n"
         L"  ThreadHaulDaemon.exe suspend  <pid|name>   suspend every thread and hold\n"
@@ -286,6 +290,38 @@ int wmain(int argc, wchar_t* argv[]) {
             std::printf("INVALID: %s\n", e.what());
             return 2;
         }
+    }
+
+    if (command == L"protect-secret") {
+        // Read from stdin, not the command line, so the secret does not land
+        // in shell history or the process list. Input is not echoed.
+        HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD mode = 0;
+        const bool tty = GetConsoleMode(in, &mode) != 0;
+        if (tty) {
+            std::fprintf(stderr, "Secret (input hidden): ");
+            SetConsoleMode(in, mode & ~ENABLE_ECHO_INPUT);
+        }
+        std::string secret;
+        std::getline(std::cin, secret);
+        if (tty) {
+            SetConsoleMode(in, mode);
+            std::fprintf(stderr, "\n");
+        }
+        if (!secret.empty() && secret.back() == '\r') secret.pop_back();
+        if (secret.empty()) {
+            std::fprintf(stderr, "No secret given.\n");
+            return 1;
+        }
+        const std::string out = config::ProtectSecret(secret);
+        SecureZeroMemory(secret.data(), secret.size());
+        if (out.empty()) {
+            std::fprintf(stderr, "Encryption failed (error %lu).\n", GetLastError());
+            return 1;
+        }
+        std::printf("%s\n", out.c_str());
+        std::fprintf(stderr, "Paste this as the value in the config file. It only decrypts on this computer.\n");
+        return 0;
     }
 
     if (command == L"verify-log") {

@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "JsonLinesLogger.h"
 #include "LogChain.h"
+#include "Secrets.h"
 
 #include <nlohmann/json.hpp>
 
@@ -468,6 +469,30 @@ void HashChainSpansRotation(const fs::path& dir) {
           "wrong predecessor is detected");
 }
 
+void ProtectedSecretsDecrypt() {
+    const char* t = "ProtectedSecretsDecrypt";
+    const std::string token = "0123456789abcdef-secret";
+    const std::string enc = config::ProtectSecret(token);
+    Check(config::IsProtectedSecret(enc) && enc.find(token) == std::string::npos, t,
+          "encrypted value has the prefix and hides the plaintext");
+    std::string plain, err;
+    Check(config::UnprotectSecret(enc, plain, err) && plain == token, t, "round trip");
+    Check(config::UnprotectSecret("plain-value", plain, err) && plain == "plain-value", t,
+          "plain values pass through");
+    Check(!config::UnprotectSecret("dpapi:!!!", plain, err), t, "bad base64 rejected");
+    Check(!config::UnprotectSecret("dpapi:QUJDREVGR0g=", plain, err), t, "non-DPAPI blob rejected");
+
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["coordination"] = {{"enabled", true}, {"controller_host", "ctl"}, {"shared_token", enc}};
+    cfg["alerts"] = {{"webhook_url", config::ProtectSecret("https://example.invalid/hook?k=1")}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.sharedToken == token, t, "config decrypts shared_token");
+    Check(c.alertWebhookUrl == L"https://example.invalid/hook?k=1", t, "config decrypts webhook_url");
+
+    cfg["coordination"]["shared_token"] = "dpapi:QUJDREVGR0g=";
+    ExpectRejected(t, cfg, "coordination.shared_token");
+}
+
 }
 
 int main() {
@@ -497,6 +522,7 @@ int main() {
     LogsGenericEventsAndTrigger(dir);
     HashChainDetectsTampering(dir);
     HashChainSpansRotation(dir);
+    ProtectedSecretsDecrypt();
     std::error_code ec;
     fs::remove_all(dir, ec);
 
