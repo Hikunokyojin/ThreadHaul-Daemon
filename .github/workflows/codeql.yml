@@ -1,0 +1,36 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'   # weekly, so new CodeQL rules are applied to unchanged code
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (C++)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      security-events: write   # upload findings to the Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-and-quality
+
+      - name: Build
+        shell: cmd
+        run: build.cmd
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:c-cpp

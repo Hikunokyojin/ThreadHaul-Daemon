@@ -40,6 +40,7 @@ cl %CFLAGS% %INC% "%ROOT%tests\StateMachineTests.cpp" %ACTUATOR% advapi32.lib /F
 cl %CFLAGS% %INC% "%ROOT%tests\ConfigLoggingTests.cpp" "%SRC%\config\Config.cpp" "%SRC%\config\Secrets.cpp" crypt32.lib "%SRC%\logging\JsonLinesLogger.cpp" "%SRC%\logging\LogChain.cpp" "%SRC%\common\SecureChannel.cpp" ws2_32.lib bcrypt.lib /Fo"%OBJ%\\" /Fe"%TST%\ConfigLoggingTests.exe" >>"%OUT%\build.log" || goto :failed
 cl %CFLAGS% %INC% "%ROOT%tests\SecurityTests.cpp" "%SRC%\common\SecureChannel.cpp" ws2_32.lib bcrypt.lib /Fo"%OBJ%\\" /Fe"%TST%\SecurityTests.exe" >>"%OUT%\build.log" || goto :failed
 cl %CFLAGS% %INC% "%ROOT%tests\TelemetryTests.cpp" %TELEMETRY% advapi32.lib wintrust.lib crypt32.lib /Fo"%OBJ%\\" /Fe"%TST%\TelemetryTests.exe" >>"%OUT%\build.log" || goto :failed
+cl %CFLAGS% %INC% "%ROOT%tests\RobustnessTests.cpp" "%SRC%\config\Config.cpp" "%SRC%\config\Secrets.cpp" "%SRC%\logging\LogChain.cpp" "%SRC%\common\SecureChannel.cpp" ws2_32.lib bcrypt.lib crypt32.lib /Fo"%OBJ%\\" /Fe"%TST%\RobustnessTests.exe" >>"%OUT%\build.log" || goto :failed
 echo [5/5] dashboard and sample config
 copy /y "%ROOT%web\dashboard\*" "%BIN%\dashboard\" >nul
 copy /y "%ROOT%config\config.example.json" "%BIN%\config.json" >nul
@@ -50,7 +51,7 @@ exit /b 0
 
 :test
 set FAILED=0
-for %%t in (StateMachineTests TelemetryTests ConfigLoggingTests SecurityTests) do (
+for %%t in (StateMachineTests TelemetryTests ConfigLoggingTests SecurityTests RobustnessTests) do (
     echo [%%t]
     "%TST%\%%t.exe" || set FAILED=1
 )

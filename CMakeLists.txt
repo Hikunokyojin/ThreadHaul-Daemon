@@ -22,6 +22,14 @@ if(MSVC)
     add_compile_options(/W3 /utf-8 /permissive-)
 endif()
 
+# MSVC static analysis (CI runs this). Third-party headers are excluded so
+# only ThreadHaul's own code is analysed; any finding fails the build.
+option(THREADHAUL_ANALYZE "Build with MSVC /analyze and treat its warnings as errors" OFF)
+if(MSVC AND THREADHAUL_ANALYZE)
+    add_compile_options(/analyze /analyze:external- /external:W0
+                        /external:I${CMAKE_SOURCE_DIR}/third_party /WX)
+endif()
+
 # --------------------------------------------------------------------------
 # Core library: everything except the entry points.
 # --------------------------------------------------------------------------
@@ -82,7 +90,7 @@ add_custom_command(TARGET ThreadHaulDaemon POST_BUILD
 # --------------------------------------------------------------------------
 include(CTest)
 if(BUILD_TESTING)
-    foreach(test StateMachineTests TelemetryTests ConfigLoggingTests SecurityTests)
+    foreach(test StateMachineTests TelemetryTests ConfigLoggingTests SecurityTests RobustnessTests)
         add_executable(${test} tests/${test}.cpp)
         target_link_libraries(${test} PRIVATE threadhaul_core)
         set_target_properties(${test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
