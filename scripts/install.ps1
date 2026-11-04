@@ -21,8 +21,13 @@
 .PARAMETER ConfigSource
     config.json to install (default: <repo>\config\config.example.json).
 .PARAMETER Account
-    LocalSystem (default) or LocalService. LocalService is lower privilege but
-    can only manage processes that also run as LocalService.
+    LocalSystem (default), LocalService, or Virtual.
+    Virtual runs the service as its own virtual account, NT SERVICE\ThreadHaulDaemon:
+    no password, no rights beyond what this script grants, and nothing shared
+    with other services. LocalService and Virtual are lower privilege but do
+    not hold SeDebugPrivilege, so they can only manage processes whose
+    security allows it (typically ones started by the same account), not
+    other users' programs.
 .PARAMETER OverwriteConfig
     Replace an existing installed config.json.
 .PARAMETER NoStart
@@ -32,7 +37,7 @@
 param(
     [string]$BinDir,
     [string]$ConfigSource,
-    [ValidateSet('LocalSystem', 'LocalService')]
+    [ValidateSet('LocalSystem', 'LocalService', 'Virtual')]
     [string]$Account = 'LocalSystem',
     [switch]$OverwriteConfig,
     [switch]$NoStart
@@ -91,12 +96,6 @@ if ($OverwriteConfig -or -not (Test-Path $ConfigPath)) {
     Write-Host "Keeping existing config: $ConfigPath (use -OverwriteConfig to replace)"
 }
 
-# Least privilege file access. Inheritance is removed so Users get nothing.
-$svcPrincipal = if ($Account -eq 'LocalService') { '*S-1-5-19' } else { '*S-1-5-18' }  # LocalService / SYSTEM
-icacls $ConfigPath /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' "${svcPrincipal}:(R)" | Out-Null
-icacls $LogDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)(F)' '*S-1-5-32-544:(OI)(CI)(F)' "${svcPrincipal}:(OI)(CI)(M)" | Out-Null
-Write-Host 'Config locked to SYSTEM + Administrators (write), service account (read).'
-
 # Event-log source. EventLogMessages.dll passes the message text through,
 # so Event Viewer shows our text without a "description not found" note.
 $msgDll = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll'
@@ -110,7 +109,11 @@ if (-not [System.Diagnostics.EventLog]::SourceExists($ServiceName)) {
 }
 
 $binPath = "`"$Exe`" --config `"$ConfigPath`""
-$obj = if ($Account -eq 'LocalService') { 'NT AUTHORITY\LocalService' } else { 'LocalSystem' }
+$obj = switch ($Account) {
+    'LocalService' { 'NT AUTHORITY\LocalService' }
+    'Virtual'      { "NT SERVICE\$ServiceName" }
+    default        { 'LocalSystem' }
+}
 # New-Service, not "sc.exe create": Windows PowerShell 5.1 strips the inner
 # quotes of a native-command argument, which breaks a binPath containing
 # spaces ("C:\Program Files\...") and makes sc.exe fail with 1639.
@@ -121,9 +124,10 @@ $newService = @{
     Description    = 'Protects critical dispatch processes from CPU starvation by throttling and suspending batch processes.'
     StartupType    = 'Automatic'
 }
-if ($Account -eq 'LocalService') {
+if ($Account -ne 'LocalSystem') {
+    # Built-in and virtual accounts have no password.
     $newService.Credential = New-Object System.Management.Automation.PSCredential(
-        'NT AUTHORITY\LocalService', (New-Object System.Security.SecureString))
+        $obj, (New-Object System.Security.SecureString))
 }
 New-Service @newService | Out-Null
 
@@ -137,6 +141,22 @@ Invoke-Sc failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/r
 Invoke-Sc privs $ServiceName SeDebugPrivilege/SeChangeNotifyPrivilege
 Invoke-Sc sidtype $ServiceName unrestricted
 Write-Host "Service '$ServiceName' created (auto start, account $obj)."
+
+# Least privilege file access. Inheritance is removed so Users get nothing.
+# Done after the service exists: the virtual account only resolves then.
+$svcPrincipal = switch ($Account) {
+    'LocalService' { '*S-1-5-19' }
+    'Virtual'      { $obj }
+    default        { '*S-1-5-18' }
+}
+icacls $ConfigPath /inheritance:r /grant:r '*S-1-5-18:(F)' '*S-1-5-32-544:(F)' "${svcPrincipal}:(R)" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not set permissions on $ConfigPath" }
+icacls $LogDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)(F)' '*S-1-5-32-544:(OI)(CI)(F)' "${svcPrincipal}:(OI)(CI)(M)" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not set permissions on $LogDir" }
+Write-Host "Config locked to SYSTEM + Administrators (write), $obj (read)."
+if ($Account -ne 'LocalSystem') {
+    Write-Warning "$obj has no SeDebugPrivilege: it can only throttle processes whose security allows it."
+}
 
 if (-not $NoStart) {
     Start-Service $ServiceName
