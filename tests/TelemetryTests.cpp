@@ -3,6 +3,7 @@
 
 #include "AdaptiveThresholds.h"
 #include "CpuMath.h"
+#include "ProcessIdentity.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
 #include "AutoProtectPolicy.h"
@@ -398,6 +399,57 @@ void AutoProtectSelectsHeaviest() {
     Check(SelectAutoTargets(c, 20, 0).empty(), __func__, "no free slots");
 }
 
+void IdentityRules() {
+    using telemetry::ExpectedIdentity;
+    using telemetry::ObservedIdentity;
+    const ObservedIdentity real{L"C:\\Apps\\Dispatch\\dispatch_api.exe", L"Contoso Ltd"};
+    Check(telemetry::IdentityMismatch({L"c:\\apps\\dispatch\\DISPATCH_API.exe", L""}, real).empty(),
+          __func__, "path compared case-insensitively");
+    Check(telemetry::IdentityMismatch({L"", L"contoso ltd"}, real).empty(), __func__, "publisher match");
+    Check(!telemetry::IdentityMismatch({L"C:\\Temp\\dispatch_api.exe", L""}, real).empty(), __func__,
+          "wrong path rejected");
+    Check(!telemetry::IdentityMismatch({L"", L"Fabrikam"}, real).empty(), __func__,
+          "wrong publisher rejected");
+    Check(!telemetry::IdentityMismatch({L"", L"Contoso Ltd"}, {real.path, L""}).empty(), __func__,
+          "unsigned rejected when a publisher is pinned");
+    Check(!telemetry::IdentityMismatch({real.path, L""}, {L"", L""}).empty(), __func__,
+          "unreadable path rejected");
+}
+
+void IdentityFilterOnOwnProcess() {
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    const std::wstring path = telemetry::ProcessImagePath(GetCurrentProcessId());
+    Check(CompareStringOrdinal(path.c_str(), -1, self, -1, TRUE) == CSTR_EQUAL, __func__,
+          "image path of own process");
+    Check(telemetry::FilePublisher(self).empty(), __func__, "unsigned test binary has no publisher");
+    Check(telemetry::FilePublisher(L"C:\\no\\such\\file.exe").empty(), __func__, "missing file");
+
+    const auto snapshot = telemetry::SnapshotProcesses();
+    std::vector<telemetry::IdentityFilter::Rejection> rejected;
+    telemetry::IdentityFilter f;
+    const auto all = f.Filter(snapshot, rejected);
+    Check(all.size() == snapshot.size() && rejected.empty(), __func__, "no pins: unchanged");
+
+    f.SetExpected({{L"TelemetryTests.exe", {self, L""}}});
+    auto out = f.Filter(snapshot, rejected);
+    Check(out.size() == snapshot.size() && rejected.empty(), __func__, "matching path kept");
+
+    f.SetExpected({{L"telemetrytests.exe", {L"C:\\Elsewhere\\TelemetryTests.exe", L""}}});
+    out = f.Filter(snapshot, rejected);
+    Check(out.size() + 1 == snapshot.size() && rejected.size() == 1 &&
+              rejected[0].entry.pid == GetCurrentProcessId(),
+          __func__, "impostor removed and reported");
+    rejected.clear();
+    out = f.Filter(snapshot, rejected);
+    Check(out.size() + 1 == snapshot.size() && rejected.empty(), __func__,
+          "still removed, reported only once");
+
+    f.SetExpected({{L"telemetrytests.exe", {L"", L"Contoso Ltd"}}});
+    out = f.Filter(snapshot, rejected);
+    Check(out.size() + 1 == snapshot.size(), __func__, "unsigned process fails a publisher pin");
+}
+
 }
 
 int main() {
@@ -437,6 +489,8 @@ int main() {
     AutoProtectEscalatesAndRecovers();
     AutoProtectIdleCanBeDisabled();
     AutoProtectSelectsHeaviest();
+    IdentityRules();
+    IdentityFilterOnOwnProcess();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -293,6 +293,30 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
         cfg.alertWebhookUrl = Utf8ToWide(url);
     }
 
+    if (const json* id = OptObject(root, "identity", "identity")) {
+        for (const auto& [name, spec] : id->items()) {
+            const std::string where = "identity." + name;
+            if (name.size() < 5 || name.find_first_of("\\/") != std::string::npos ||
+                _stricmp(name.c_str() + name.size() - 4, ".exe") != 0) {
+                throw ConfigError(where + ": key must be an executable name such as app.exe");
+            }
+            if (!spec.is_object()) throw ConfigError(where + " must be an object");
+            DaemonConfig::PinnedIdentity p;
+            p.name = Utf8ToWide(name);
+            p.path = Utf8ToWide(OptString(spec, "path", where + ".path", ""));
+            p.publisher = Utf8ToWide(OptString(spec, "publisher", where + ".publisher", ""));
+            if (p.path.empty() && p.publisher.empty()) {
+                throw ConfigError(where + " needs a path, a publisher, or both");
+            }
+            if (!p.path.empty() && (p.path.size() < 3 || p.path[1] != L':' || p.path[2] != L'\\')) {
+                if (p.path.rfind(L"\\\\", 0) != 0) {
+                    throw ConfigError(where + ".path must be a full path such as C:\\\\Apps\\\\app.exe");
+                }
+            }
+            cfg.identities.push_back(std::move(p));
+        }
+    }
+
     if (const json* c = OptObject(root, "coordination", "coordination")) {
         cfg.coordinationEnabled = OptBool(*c, "enabled", "coordination.enabled", false);
         cfg.controllerHost = Utf8ToWide(

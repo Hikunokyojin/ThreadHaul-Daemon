@@ -493,6 +493,20 @@ void ProtectedSecretsDecrypt() {
     ExpectRejected(t, cfg, "coordination.shared_token");
 }
 
+void ParsesIdentitySection() {
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["identity"] = {{"dispatch_api.exe", {{"path", "C:\\Apps\\dispatch_api.exe"}, {"publisher", "Contoso Ltd"}}},
+                       {"invoice_batch.exe", {{"publisher", "Contoso Ltd"}}}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.identities.size() == 2 && c.identities[0].name == L"dispatch_api.exe" &&
+              c.identities[0].path == L"C:\\Apps\\dispatch_api.exe",
+          __func__, "identity entries");
+    auto with = [&](nlohmann::json id) { nlohmann::json x = nlohmann::json::parse(kValidConfig); x["identity"] = id; return x; };
+    ExpectRejected(__func__, with({{"notanexe", {{"publisher", "X"}}}}), "identity.notanexe");
+    ExpectRejected(__func__, with({{"a.exe", nlohmann::json::object()}}), "identity.a.exe");
+    ExpectRejected(__func__, with({{"a.exe", {{"path", "relative\\a.exe"}}}}), "identity.a.exe.path");
+}
+
 }
 
 int main() {
@@ -523,6 +537,7 @@ int main() {
     HashChainDetectsTampering(dir);
     HashChainSpansRotation(dir);
     ProtectedSecretsDecrypt();
+    ParsesIdentitySection();
     std::error_code ec;
     fs::remove_all(dir, ec);
 

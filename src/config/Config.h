@@ -24,6 +24,15 @@ struct DaemonConfig {
     std::vector<std::wstring> batchProcesses;
     std::vector<std::wstring> protectedProcesses;
 
+    // "identity": {"app.exe": {"path": "C:\\...\\app.exe", "publisher": "Contoso Ltd"}}
+    // A process with a pinned name gets its role only if it matches.
+    struct PinnedIdentity {
+        std::wstring name;
+        std::wstring path;
+        std::wstring publisher;
+    };
+    std::vector<PinnedIdentity> identities;
+
     std::wstring logPath;
     int maxFileSizeMb = 50;
     int maxRotatedFiles = 5;
