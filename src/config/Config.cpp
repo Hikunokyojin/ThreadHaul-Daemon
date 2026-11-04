@@ -294,6 +294,9 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
         if (cfg.coordinationEnabled && cfg.controllerHost.empty()) {
             throw ConfigError("coordination.controller_host must not be empty when enabled");
         }
+        if (cfg.coordinationEnabled && cfg.sharedToken.size() < 16) {
+            throw ConfigError("coordination.shared_token must be at least 16 characters when enabled");
+        }
     }
 
     if (const json* sec = OptObject(root, "security", "security")) {

@@ -6,6 +6,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "SecureChannel.h"
+
 #include <chrono>
 
 namespace daemon {
@@ -122,8 +124,14 @@ void CoordinationClient::Loop() {
 bool CoordinationClient::Session(unsigned long long rawSock) {
     const SOCKET sock = static_cast<SOCKET>(rawSock);
     const std::string host = LocalHostName();
-    nlohmann::json hello = {{"type", "hello"}, {"host", host}, {"token", token_}, {"version", 1}};
-    if (!SendAll(sock, hello.dump())) return false;
+    securechannel::Channel channel(sock);
+    std::string handshakeError;
+    if (!channel.ClientHandshake(token_, host, handshakeError)) {
+        log_("coordination_rejected", handshakeError);
+        return false;
+    }
+    log_("coordination_secured", "AES-256-GCM, mutually authenticated");
+    auto SendAll = [&channel](SOCKET, const std::string& line) { return channel.Send(line); };
 
     using clock = std::chrono::steady_clock;
     auto nextHeartbeat = clock::now();
@@ -150,25 +158,11 @@ bool CoordinationClient::Session(unsigned long long rawSock) {
             if (!SendAll(sock, msg.dump())) return false;
         }
 
-        fd_set readSet;
-        FD_ZERO(&readSet);
-        FD_SET(sock, &readSet);
-        timeval tv{0, 200 * 1000};
-        const int ready = select(0, &readSet, nullptr, nullptr, &tv);
-        if (ready == SOCKET_ERROR) return false;
-        if (ready == 0) continue;
-
-        char buf[4096];
-        const int n = recv(sock, buf, sizeof(buf), 0);
-        if (n == 0) return true;
-        if (n < 0) return false;
-        inbuf.append(buf, static_cast<size_t>(n));
-        if (inbuf.size() > 1024 * 1024) return false;
-
-        size_t pos;
-        while ((pos = inbuf.find('\n')) != std::string::npos) {
-            const std::string line = inbuf.substr(0, pos);
-            inbuf.erase(0, pos + 1);
+        std::string line;
+        const int got = channel.Receive(line, 200);
+        if (got < 0) return false;  // closed, or a frame failed authentication
+        if (got == 0) continue;
+        {
             const nlohmann::json msg = nlohmann::json::parse(line, nullptr, false);
             if (msg.is_discarded() || !msg.is_object()) continue;
             const std::string type = msg.value("type", "");

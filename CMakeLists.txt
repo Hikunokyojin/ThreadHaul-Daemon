@@ -46,9 +46,10 @@ add_library(threadhaul_core STATIC
     src/service/Daemon.cpp
     src/service/Dashboard.cpp
     src/service/HttpServer.cpp
+    src/common/SecureChannel.cpp
 )
 target_include_directories(threadhaul_core PUBLIC
-    src/actuator src/telemetry src/config src/logging src/service third_party)
+    src/actuator src/telemetry src/config src/logging src/service src/common third_party)
 target_link_libraries(threadhaul_core PUBLIC
     advapi32 ws2_32 winhttp wtsapi32 bcrypt user32 shell32)
 
@@ -58,9 +59,9 @@ target_link_libraries(threadhaul_core PUBLIC
 add_executable(ThreadHaulDaemon src/service/main.cpp)
 target_link_libraries(ThreadHaulDaemon PRIVATE threadhaul_core)
 
-add_executable(ThreadHaulController src/controller/main.cpp)
-target_include_directories(ThreadHaulController PRIVATE third_party)
-target_link_libraries(ThreadHaulController PRIVATE ws2_32)
+add_executable(ThreadHaulController src/controller/main.cpp src/common/SecureChannel.cpp)
+target_include_directories(ThreadHaulController PRIVATE src/common third_party)
+target_link_libraries(ThreadHaulController PRIVATE ws2_32 bcrypt)
 
 add_executable(critical_simulator tools/simulators/critical_simulator.cpp)
 add_executable(batch_simulator tools/simulators/batch_simulator.cpp)
@@ -78,7 +79,7 @@ add_custom_command(TARGET ThreadHaulDaemon POST_BUILD
 # --------------------------------------------------------------------------
 include(CTest)
 if(BUILD_TESTING)
-    foreach(test StateMachineTests TelemetryTests ConfigLoggingTests)
+    foreach(test StateMachineTests TelemetryTests ConfigLoggingTests SecurityTests)
         add_executable(${test} tests/${test}.cpp)
         target_link_libraries(${test} PRIVATE threadhaul_core)
         set_target_properties(${test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

@@ -278,7 +278,8 @@ void ParsesOptionalSections() {
                        {"io", {{"enabled", true}, {"critical_io_limit_mb_per_sec", 50}}}};
     cfg["adaptive"] = {{"enabled", true}, {"window_samples", 8}, {"max_adjust_percent", 7.5}};
     cfg["alerts"] = {{"popup", false}, {"webhook_url", "https://example.invalid/hook"}};
-    cfg["coordination"] = {{"enabled", true}, {"controller_host", "ctl"}, {"controller_port", 9000}};
+    cfg["coordination"] = {{"enabled", true}, {"controller_host", "ctl"}, {"controller_port", 9000},
+                           {"shared_token", "0123456789abcdef-secret"}};
     cfg["security"] = {{"require_protected_config", true}};
     const config::DaemonConfig c = config::ParseConfig(cfg.dump());
     Check(!c.cpuPerCore && c.selfMonitorIntervalSec == 10, __func__, "telemetry");
@@ -309,6 +310,8 @@ void RejectsBadOptionalSections() {
     ExpectRejected(__func__, with("triggers", {{"io", {{"critical_io_limit_mb_per_sec", 0}}}}),
                    "triggers.io.critical_io_limit_mb_per_sec");
     ExpectRejected(__func__, with("security", 5), "security");
+    ExpectRejected(__func__, with("coordination", {{"enabled", true}, {"shared_token", "short"}}),
+                   "coordination.shared_token");
 }
 
 void LogsGenericEventsAndTrigger(const fs::path& dir) {
