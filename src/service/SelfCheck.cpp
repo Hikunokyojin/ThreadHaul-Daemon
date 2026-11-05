@@ -57,8 +57,13 @@ void CheckServiceAccount() {
         if (scm) CloseServiceHandle(scm);
         return;
     }
+    // The first call only asks for the buffer size, so it is expected to fail
+    // with ERROR_INSUFFICIENT_BUFFER; anything else means no size is known.
     DWORD needed = 0;
-    QueryServiceConfigW(svc, nullptr, 0, &needed);
+    if (!QueryServiceConfigW(svc, nullptr, 0, &needed) &&
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        needed = 0;
+    }
     std::unique_ptr<BYTE[]> buf(new BYTE[needed ? needed : 1]);
     auto* qsc = reinterpret_cast<QUERY_SERVICE_CONFIGW*>(buf.get());
     if (needed && QueryServiceConfigW(svc, qsc, needed, &needed)) {
