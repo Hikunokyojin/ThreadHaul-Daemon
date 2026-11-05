@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ThreadHaul
-    VERSION 1.0.0
+    VERSION 2.0.0
     DESCRIPTION "Windows service that keeps latency-critical workloads responsive under CPU pressure"
     LANGUAGES CXX)
 

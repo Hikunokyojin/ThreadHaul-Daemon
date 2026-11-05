@@ -217,6 +217,7 @@ The installer:
 |---|---|
 | `-OverwriteConfig` | Replace an installed `config.json` with the packaged example |
 | `-Account LocalService` | Lower-privilege account. It can then only manage processes that also run as LocalService. |
+| `-Account Virtual` | Runs as `NT SERVICE\ThreadHaulDaemon`, an account of its own with no password and no rights beyond reading its config and writing its logs. Like LocalService, it can only manage processes whose security allows it. |
 | `-NoStart` | Install without starting |
 | `-BinDir <path>` / `-ConfigSource <path>` | Install from a different binary folder or configuration file |
 
@@ -244,7 +245,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1 -RemoveData  # 
 & "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe" dashboard
 ```
 
-This command asks the service for a per-session access key over the administrator-only control channel, then opens `http://127.0.0.1:8787` in your browser. The key changes every time the service starts.
+This command asks the service for a per-session access key over the administrator-only control channel, then opens `http://127.0.0.1:8787` in your browser. The key expires after 30 minutes without use or 12 hours in total, ends when you click **Sign out**, and changes every time the service starts; run the command again for a fresh link. Ten wrong keys within a minute lock the API for a minute.
 
 | Tab | What it provides |
 |---|---|
@@ -261,6 +262,7 @@ This command asks the service for a per-session access key over the administrato
 | `GET /api/log?offset=N` | Log entries after byte offset `N`. `-1` returns the tail. The response includes the next offset and a `reset` flag after rotation. |
 | `POST /api/command` | `{"command":"suspend","target":"<pid or exe>","confirm":false}`. Commands are `throttle`, `suspend`, `resume`, `release` and `exempt`. |
 | `POST /api/role` | `{"name":"<exe>","role":"critical","confirm":false}`. Roles are `critical`, `batch`, `protected` and `none`. |
+| `POST /api/logout` | Ends the session: the key stops working immediately |
 
 Making a system process or service critical or batch, or throttling or suspending one, returns `{"ok":false,"needs_confirmation":true,...}` until the request is repeated with `"confirm":true`. Essential processes are always refused.
 
@@ -276,6 +278,9 @@ $thd = "C:\Program Files\ThreadHaulDaemon\ThreadHaulDaemon.exe"
 & $thd exempt   heavy_app.exe         # undo auto-protect and exclude it until it exits
 & $thd dashboard                      # open the dashboard
 & $thd validate-config C:\ProgramData\ThreadHaulDaemon\config.json
+& $thd selfcheck                      # audit this installation's security settings
+& $thd verify-log                     # check the log's hash chain for edits
+& $thd protect-secret                 # encrypt a token or webhook URL for config.json
 & $thd help
 ```
 
@@ -296,6 +301,7 @@ The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`; a ful
 | `thresholds.critical` | Suspend when pressure ≥ `percent` for `consecutive_samples` after throttling | 90%, 5 |
 | `thresholds.low` | Recover when pressure < `percent` for `consecutive_samples` | 60%, 5 |
 | `processes.critical` / `batch` / `protected` | Executable names (not paths); matched case-insensitively. May be empty. | |
+| `identity.<name.exe>.path` / `publisher` | Pins a name to its full path and/or the publisher of its embedded signature. A process with that name that doesn't match gets no role and is logged as `identity_mismatch`. | none |
 | `logging.log_path` | JSON Lines log file | |
 | `logging.max_file_size_mb` / `max_rotated_files` | Rotation policy | 50 MB (1–1024), 5 files (0–100) |
 | `telemetry.cpu_normalization` | `per_core` (100% = one core) or `total` (100% = the whole machine) | `per_core` |
@@ -314,6 +320,18 @@ The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`; a ful
 | `dashboard.enabled` / `port` | Dashboard on `127.0.0.1` | `true`, 8787 (1024–65535) |
 | `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
 
+**Encrypted secrets.** `coordination.shared_token` and `alerts.webhook_url` may hold a `dpapi:...` value instead of plain text. Run `ThreadHaulDaemon.exe protect-secret`, type the secret (it isn't echoed), and paste the printed value into `config.json`. The value only decrypts on the machine that created it.
+
+**Identity pinning** example:
+
+```json
+"identity": {
+  "dispatch_api.exe": { "path": "C:\\Apps\\Dispatch\\dispatch_api.exe", "publisher": "Contoso Ltd" }
+}
+```
+
+Most Windows components are catalog-signed rather than signed inside the file, so pin those by `path`.
+
 **Validation:**
 - Every field is type- and range-checked.
 - `low` must be below `high`, and `high` must not exceed `critical`.
@@ -327,7 +345,7 @@ The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`; a ful
 
 ### JSON Lines log
 
-Every line of `C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl` is one JSON object: `log_type` first, then `timestamp` (ISO 8601 UTC, milliseconds), then `snake_case` fields. The file rotates by size.
+Every line of `C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl` is one JSON object: `log_type` first, then `timestamp` (ISO 8601 UTC, milliseconds), then `snake_case` fields, and finally `prev_hash`: the SHA-256 of the previous line, so any edit, insertion or deletion breaks the chain. The file rotates by size, and the chain continues across rotated files and restarts. `ThreadHaulDaemon.exe verify-log` checks it.
 
 ```json
 {"log_type":"actuator_action","timestamp":"2026-10-15T07:27:41.749Z","batch_process_id":5190,"batch_process_name":"invoice_batch.exe","critical_process_id":4821,"action":"threads_suspended","from_state":"throttled","to_state":"suspended","cpu_percent":100.0,"actuation_succeeded":true,"trigger":"automatic"}
@@ -342,6 +360,7 @@ Every line of `C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl` is one JSO
 | `process_lifecycle` | A target appears, exits, crashes, restarts or is refused | `role`, `event`, `process_name/id`, `exit_code`, `previous_process_id` |
 | `config_reload` / `config_security` | The configuration changed, was rejected, or its permissions are too open | `success`, `error`, `config_sha256` |
 | `adaptive_threshold` | Predictive thresholds moved | `offset_percent`, `slope_percent_per_sample`, `forecast_percent` |
+| `identity_mismatch` | A process has a pinned name but the wrong path or publisher (once per process) | `process_name/id`, `image_path`, `publisher`, `reason` |
 | `manual_override` / `dashboard_action` | A command or role change from the CLI or dashboard | `command` / `role`, `result`, `confirmed_risk` |
 | `alert`, `self_monitor`, `service_lifecycle`, `dashboard`, `coordination` | Alerts, the service's own footprint, start and stop, dashboard and controller events | |
 
@@ -382,8 +401,11 @@ Then set this in each server's `config.json`:
 }
 ```
 
+The token must be at least 16 characters; use a long random value, and store it with `protect-secret`. Version 2 agents and controllers only talk to each other.
+
 **What each service does:**
-- connects with the shared token;
+- connects, and proves to the controller (and the controller to it) that both know the token, without sending it;
+- encrypts all further traffic with AES-256-GCM, rejecting tampered or replayed messages;
 - sends a heartbeat (pressure, thresholds, batch states) every few seconds;
 - forwards every state change;
 - reconnects with back-off if the controller is unavailable, protecting its own server meanwhile.
@@ -412,7 +434,13 @@ Then set this in each server's `config.json`:
   - sends a strict Content-Security-Policy;
   - renders all content as text.
 - **Process safety.** Essential processes are never managed. Other system processes and services need explicit confirmation, which the service enforces.
-- **Controller.** Agents authenticate with a shared token. Traffic is not encrypted, so keep the controller on a trusted network.
+- **Controller.** Agent and controller authenticate each other with the shared token, and all traffic is encrypted and protected against tampering and replay. A peer is locked out for 60 seconds after 5 failed handshakes.
+- **Dashboard sessions** expire after 30 minutes idle or 12 hours, can be ended with Sign out, and 10 bad keys in a minute lock the API for a minute.
+- **Tamper-evident log.** Every log line is hash-chained; `verify-log` finds edits.
+- **Encrypted secrets** with DPAPI (`protect-secret`), and **identity pinning** of process names to a path or publisher.
+- **Testing.** Fuzz tests, MSVC `/analyze` and CodeQL run in CI.
+
+The full threat model, including what each defence does *not* cover, is in [SECURITY.md](SECURITY.md#threat-model). Run `ThreadHaulDaemon.exe selfcheck` from an Administrator PowerShell to audit an installation.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
