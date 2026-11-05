@@ -5,6 +5,8 @@
 #include <shellapi.h>
 
 #include <cstdio>
+#include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -12,6 +14,9 @@
 #include "Config.h"
 #include "ControlPipe.h"
 #include "Daemon.h"
+#include "LogChain.h"
+#include "Secrets.h"
+#include "SelfCheck.h"
 #include "PriorityControl.h"
 #include "ThreadControl.h"
 #include "ProcessMonitor.h"
@@ -189,7 +194,11 @@ void PrintUsage() {
         L"      Run in the foreground (Ctrl+C to stop).\n"
         L"  ThreadHaulDaemon.exe [--config <path>]\n"
         L"      Entry point used by the Windows Service (install with scripts\\install.ps1).\n"
-        L"  ThreadHaulDaemon.exe validate-config [<path>]\n\n"
+        L"  ThreadHaulDaemon.exe validate-config [<path>]\n"
+        L"  ThreadHaulDaemon.exe verify-log [<log path>]  check the log's hash chain for tampering\n"
+        L"  ThreadHaulDaemon.exe selfcheck [<config>]  audit this installation's security settings\n"
+        L"  ThreadHaulDaemon.exe protect-secret        encrypt a token or webhook URL for the config\n"
+        L"      (reads the secret from input; paste the printed dpapi:... value into the config)\n\n"
         L"Manual override (talks to the running daemon; needs Administrator):\n"
         L"  ThreadHaulDaemon.exe throttle <pid|name>   demote to IDLE priority and hold\n"
         L"  ThreadHaulDaemon.exe suspend  <pid|name>   suspend every thread and hold\n"
@@ -283,6 +292,90 @@ int wmain(int argc, wchar_t* argv[]) {
             std::printf("INVALID: %s\n", e.what());
             return 2;
         }
+    }
+
+    if (command == L"selfcheck") {
+        return daemon::RunSelfCheck(!positional.empty() ? positional[0]
+                                    : !g_configPath.empty() ? g_configPath
+                                                            : daemon::DefaultConfigPath(true));
+    }
+
+    if (command == L"protect-secret") {
+        // Read from stdin, not the command line, so the secret does not land
+        // in shell history or the process list. Input is not echoed.
+        HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD mode = 0;
+        const bool tty = GetConsoleMode(in, &mode) != 0;
+        if (tty) {
+            std::fprintf(stderr, "Secret (input hidden): ");
+            SetConsoleMode(in, mode & ~ENABLE_ECHO_INPUT);
+        }
+        std::string secret;
+        std::getline(std::cin, secret);
+        if (tty) {
+            SetConsoleMode(in, mode);
+            std::fprintf(stderr, "\n");
+        }
+        if (!secret.empty() && secret.back() == '\r') secret.pop_back();
+        if (secret.empty()) {
+            std::fprintf(stderr, "No secret given.\n");
+            return 1;
+        }
+        const std::string out = config::ProtectSecret(secret);
+        SecureZeroMemory(secret.data(), secret.size());
+        if (out.empty()) {
+            std::fprintf(stderr, "Encryption failed (error %lu).\n", GetLastError());
+            return 1;
+        }
+        std::printf("%s\n", out.c_str());
+        std::fprintf(stderr, "Paste this as the value in the config file. It only decrypts on this computer.\n");
+        return 0;
+    }
+
+    if (command == L"verify-log") {
+        std::wstring log;
+        if (!positional.empty()) {
+            log = positional[0];
+        } else {
+            const std::wstring cfg = !g_configPath.empty() ? g_configPath : daemon::DefaultConfigPath(true);
+            try {
+                log = config::LoadConfigFile(cfg).logPath;
+            } catch (const config::ConfigError& e) {
+                std::printf("Cannot read the log path from the config: %s\nPass the log file: "
+                            "ThreadHaulDaemon.exe verify-log <path>\n", e.what());
+                return 2;
+            }
+        }
+        // Oldest rotated file first, so each file's first line can be
+        // checked against the end of the one before it.
+        std::vector<std::wstring> files;
+        for (int i = 99; i >= 1; --i) {
+            const std::wstring f = log + L"." + std::to_wstring(i);
+            if (GetFileAttributesW(f.c_str()) != INVALID_FILE_ATTRIBUTES) files.push_back(f);
+        }
+        if (GetFileAttributesW(log.c_str()) != INVALID_FILE_ATTRIBUTES) files.push_back(log);
+        if (files.empty()) {
+            std::wprintf(L"No log found at %ls\n", log.c_str());
+            return 2;
+        }
+        bool ok = true;
+        std::string expected;
+        for (const std::wstring& f : files) {
+            std::ifstream in(f, std::ios::binary);
+            const logging::ChainReport r = logging::VerifyChain(in, expected);
+            if (r.Ok()) {
+                std::wprintf(L"OK      %ls: %zu lines (%zu chained, %zu from before chaining)\n",
+                             f.c_str(), r.lines, r.chained, r.unchained);
+            } else {
+                ok = false;
+                std::wprintf(L"BROKEN  %ls: line %zu: %hs\n", f.c_str(), r.brokenLine,
+                             r.message.c_str());
+            }
+            expected = logging::LastLineHash(f);
+        }
+        std::printf(ok ? "Log chain intact.\n"
+                       : "Log chain BROKEN: the log was edited, or lines were inserted or removed.\n");
+        return ok ? 0 : 3;
     }
 
     if (!command.empty()) {

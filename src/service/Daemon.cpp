@@ -202,6 +202,11 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
     effective_ = adaptive_.Adjust(base_, coordination_ ? coordination_->ExternalBias() : 0.0);
     actuator_->SetConfig(effective_);
     actuator_->SetProtectedProcessNames(cfg.protectedProcesses);
+    {
+        std::map<std::wstring, telemetry::ExpectedIdentity> pinned;
+        for (const auto& p : cfg.identities) pinned[p.name] = {p.path, p.publisher};
+        identity_.SetExpected(std::move(pinned));
+    }
 
     const auto norm = cfg.cpuPerCore ? telemetry::CpuNormalization::PerCore
                                      : telemetry::CpuNormalization::TotalSystem;
@@ -348,7 +353,17 @@ void Daemon::Run(HANDLE stopEvent) {
 }
 
 void Daemon::Poll() {
-    const std::vector<telemetry::ProcessEntry> snapshot = telemetry::SnapshotProcesses();
+    // Pinned names that fail their identity check get no role this poll.
+    std::vector<telemetry::IdentityFilter::Rejection> impostors;
+    const std::vector<telemetry::ProcessEntry> snapshot =
+        identity_.Filter(telemetry::SnapshotProcesses(), impostors);
+    for (const auto& r : impostors) {
+        Log("identity_mismatch", ordered_json{{"process_name", Narrow(r.entry.name)},
+                                              {"process_id", r.entry.pid},
+                                              {"image_path", Narrow(r.observed.path)},
+                                              {"publisher", Narrow(r.observed.publisher)},
+                                              {"reason", r.reason}});
+    }
 
     std::vector<telemetry::ProcessSample> samples;
     std::vector<telemetry::LifecycleEvent> events;
@@ -855,8 +870,10 @@ std::string Daemon::ReadLog(long long offset) {
     LARGE_INTEGER pos;
     pos.QuadPart = start;
     if (length > 0) {
-        SetFilePointerEx(h, pos, nullptr, FILE_BEGIN);
-        ReadFile(h, buf.data(), static_cast<DWORD>(length), &read, nullptr);
+        if (!SetFilePointerEx(h, pos, nullptr, FILE_BEGIN) ||
+            !ReadFile(h, buf.data(), static_cast<DWORD>(length), &read, nullptr)) {
+            read = 0;  // report nothing new rather than stale buffer contents
+        }
     }
     CloseHandle(h);
     buf.resize(read);

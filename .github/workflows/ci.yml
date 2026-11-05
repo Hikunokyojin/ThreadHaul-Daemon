@@ -39,6 +39,39 @@ jobs:
         shell: cmd
         run: build.cmd test
 
+  analyze:
+    name: Static analysis (MSVC /analyze)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # THREADHAUL_ANALYZE adds /analyze /WX: any finding fails the build.
+      - name: Configure with /analyze
+        run: cmake --preset windows-msvc -DTHREADHAUL_ANALYZE=ON
+
+      - name: Build
+        run: cmake --build --preset release
+
+  fuzz:
+    name: Robustness tests (long run)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        shell: cmd
+        run: build.cmd
+
+      # A different seed every run widens coverage over time; the seed is
+      # printed first, so a failure can be reproduced locally with
+      # THREADHAUL_FUZZ_SEED=<seed>.
+      - name: Fuzz parsers and the secure channel
+        shell: pwsh
+        env:
+          THREADHAUL_FUZZ_ITERATIONS: '50000'
+          THREADHAUL_FUZZ_SEED: ${{ github.run_number }}
+        run: build\tests\RobustnessTests.exe
+
   lint:
     name: Lint scripts and dashboard
     runs-on: windows-latest

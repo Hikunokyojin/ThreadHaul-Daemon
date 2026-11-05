@@ -26,6 +26,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "SecureChannel.h"
+
 #include <atomic>
 #include <cstdio>
 #include <fstream>
@@ -44,6 +46,7 @@ using nlohmann::json;
 
 struct Agent {
     SOCKET sock = INVALID_SOCKET;
+    std::unique_ptr<securechannel::Channel> channel;
     std::string host;
     json lastHeartbeat;
     ULONGLONG lastSeen = 0;
@@ -81,15 +84,29 @@ void LogLine(const std::string& logType, json fields) {
 }
 
 bool SendLine(Agent& a, const json& msg) {
-    std::lock_guard<std::mutex> lock(a.sendMutex);
-    const std::string data = msg.dump() + "\n";
-    size_t sent = 0;
-    while (sent < data.size()) {
-        const int n = send(a.sock, data.data() + sent, static_cast<int>(data.size() - sent), 0);
-        if (n == SOCKET_ERROR) return false;
-        sent += static_cast<size_t>(n);
+    return a.channel && a.channel->Send(msg.dump());
+}
+
+// Failed handshakes per peer address: 5 failures inside 60 s lock the address
+// out for 60 s, which makes guessing the shared secret impractical.
+std::map<std::string, std::pair<int, ULONGLONG>> g_failures;
+
+bool LockedOut(const std::string& peer) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto it = g_failures.find(peer);
+    if (it == g_failures.end()) return false;
+    if (GetTickCount64() - it->second.second > 60000) {
+        g_failures.erase(it);
+        return false;
     }
-    return true;
+    return it->second.first >= 5;
+}
+
+void RecordFailure(const std::string& peer) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto& f = g_failures[peer];
+    if (GetTickCount64() - f.second > 60000) f = {0, GetTickCount64()};
+    ++f.first;
 }
 
 // Cluster-wide coordination: bias every agent when enough of them are hot.
@@ -121,41 +138,39 @@ void Rebalance() {
 }
 
 void ServeAgent(SOCKET sock, std::string peer) {
+    if (LockedOut(peer)) {
+        closesocket(sock);
+        return;
+    }
     auto agent = std::make_shared<Agent>();
     agent->sock = sock;
-    std::string buf;
-    bool authed = false;
-    char chunk[4096];
+    agent->channel = std::make_unique<securechannel::Channel>(sock);
+    std::string host, error;
+    if (!agent->channel->ServerHandshake(g_token, host, error)) {
+        RecordFailure(peer);
+        LogLine("agent_rejected", json{{"peer", peer}, {"reason", error}});
+        std::printf("[reject] %s: %s\n", peer.c_str(), error.c_str());
+        closesocket(sock);
+        return;
+    }
+    const bool authed = true;
+    agent->host = host;
+    agent->lastSeen = GetTickCount64();
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_agents[agent->host] = agent;
+    }
+    LogLine("agent_connected", json{{"host", agent->host}, {"peer", peer}, {"secured", true}});
+    std::printf("[connect] %s (%s, encrypted)\n", agent->host.c_str(), peer.c_str());
     while (g_running) {
-        const int n = recv(sock, chunk, sizeof(chunk), 0);
-        if (n <= 0) break;
-        buf.append(chunk, static_cast<size_t>(n));
-        if (buf.size() > 4 * 1024 * 1024) break;
-        size_t pos;
-        while ((pos = buf.find('\n')) != std::string::npos) {
-            const json msg = json::parse(buf.substr(0, pos), nullptr, false);
-            buf.erase(0, pos + 1);
+        std::string line;
+        const int got = agent->channel->Receive(line, 1000);
+        if (got < 0) break;
+        if (got == 0) continue;
+        {
+            const json msg = json::parse(line, nullptr, false);
             if (msg.is_discarded() || !msg.is_object()) continue;
             const std::string type = msg.value("type", "");
-            if (!authed) {
-                if (type != "hello" || msg.value("token", "") != g_token) {
-                    SendLine(*agent, json{{"type", "error"}, {"message", "bad token"}});
-                    LogLine("agent_rejected", json{{"peer", peer}});
-                    std::printf("[reject] %s: bad hello/token\n", peer.c_str());
-                    closesocket(sock);
-                    return;
-                }
-                authed = true;
-                agent->host = msg.value("host", peer);
-                agent->lastSeen = GetTickCount64();
-                {
-                    std::lock_guard<std::mutex> lock(g_mutex);
-                    g_agents[agent->host] = agent;
-                }
-                LogLine("agent_connected", json{{"host", agent->host}, {"peer", peer}});
-                std::printf("[connect] %s (%s)\n", agent->host.c_str(), peer.c_str());
-                continue;
-            }
             agent->lastSeen = GetTickCount64();
             if (type == "heartbeat") {
                 agent->lastHeartbeat = msg;
@@ -272,10 +287,18 @@ int main(int argc, char* argv[]) {
         else if (k == "--bias") g_bias = std::atof(argv[i + 1]);
         else if (k == "--log") logPath = argv[i + 1];
     }
+    if (g_token.size() < securechannel::Channel::kMinSecretLength) {
+        std::fprintf(stderr, "--token is required and must be at least %zu characters.\n",
+                     securechannel::Channel::kMinSecretLength);
+        return 1;
+    }
     g_log.open(logPath, std::ios::app);
 
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        std::fprintf(stderr, "cannot initialise networking (error %d)\n", WSAGetLastError());
+        return 1;
+    }
     SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -290,9 +313,6 @@ int main(int argc, char* argv[]) {
                 "Commands: list | <host|all> <throttle|suspend|resume|release> <pid|name> | "
                 "<host> status | quit\n",
                 port, logPath.c_str());
-    if (g_token.empty()) {
-        std::printf("WARNING: no --token set; any agent with an empty token is accepted.\n");
-    }
     LogLine("controller_started", json{{"port", port}});
 
     std::thread([listener] {

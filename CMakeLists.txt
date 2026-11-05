@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ThreadHaul
-    VERSION 1.0.0
+    VERSION 2.0.0
     DESCRIPTION "Windows service that keeps latency-critical workloads responsive under CPU pressure"
     LANGUAGES CXX)
 
@@ -22,6 +22,14 @@ if(MSVC)
     add_compile_options(/W3 /utf-8 /permissive-)
 endif()
 
+# MSVC static analysis (CI runs this). Third-party headers are excluded so
+# only ThreadHaul's own code is analysed; any finding fails the build.
+option(THREADHAUL_ANALYZE "Build with MSVC /analyze and treat its warnings as errors" OFF)
+if(MSVC AND THREADHAUL_ANALYZE)
+    add_compile_options(/analyze /analyze:external- /external:W0
+                        /external:I${CMAKE_SOURCE_DIR}/third_party /WX)
+endif()
+
 # --------------------------------------------------------------------------
 # Core library: everything except the entry points.
 # --------------------------------------------------------------------------
@@ -33,11 +41,14 @@ add_library(threadhaul_core STATIC
     src/telemetry/AdaptiveThresholds.cpp
     src/telemetry/CpuMath.cpp
     src/telemetry/ProcessMonitor.cpp
+    src/telemetry/ProcessIdentity.cpp
     src/telemetry/ProcessSafety.cpp
     src/telemetry/ProcessTable.cpp
     src/config/Config.cpp
     src/logging/EventLogWriter.cpp
     src/logging/JsonLinesLogger.cpp
+    src/logging/LogChain.cpp
+    src/config/Secrets.cpp
     src/service/Alerts.cpp
     src/service/AutoProtect.cpp
     src/service/ConfigSecurity.cpp
@@ -46,11 +57,13 @@ add_library(threadhaul_core STATIC
     src/service/Daemon.cpp
     src/service/Dashboard.cpp
     src/service/HttpServer.cpp
+    src/service/SelfCheck.cpp
+    src/common/SecureChannel.cpp
 )
 target_include_directories(threadhaul_core PUBLIC
-    src/actuator src/telemetry src/config src/logging src/service third_party)
+    src/actuator src/telemetry src/config src/logging src/service src/common third_party)
 target_link_libraries(threadhaul_core PUBLIC
-    advapi32 ws2_32 winhttp wtsapi32 bcrypt user32 shell32)
+    advapi32 ws2_32 winhttp wtsapi32 bcrypt crypt32 wintrust user32 shell32)
 
 # --------------------------------------------------------------------------
 # Executables
@@ -58,9 +71,9 @@ target_link_libraries(threadhaul_core PUBLIC
 add_executable(ThreadHaulDaemon src/service/main.cpp)
 target_link_libraries(ThreadHaulDaemon PRIVATE threadhaul_core)
 
-add_executable(ThreadHaulController src/controller/main.cpp)
-target_include_directories(ThreadHaulController PRIVATE third_party)
-target_link_libraries(ThreadHaulController PRIVATE ws2_32)
+add_executable(ThreadHaulController src/controller/main.cpp src/common/SecureChannel.cpp)
+target_include_directories(ThreadHaulController PRIVATE src/common third_party)
+target_link_libraries(ThreadHaulController PRIVATE ws2_32 bcrypt)
 
 add_executable(critical_simulator tools/simulators/critical_simulator.cpp)
 add_executable(batch_simulator tools/simulators/batch_simulator.cpp)
@@ -78,7 +91,7 @@ add_custom_command(TARGET ThreadHaulDaemon POST_BUILD
 # --------------------------------------------------------------------------
 include(CTest)
 if(BUILD_TESTING)
-    foreach(test StateMachineTests TelemetryTests ConfigLoggingTests)
+    foreach(test StateMachineTests TelemetryTests ConfigLoggingTests SecurityTests RobustnessTests)
         add_executable(${test} tests/${test}.cpp)
         target_link_libraries(${test} PRIVATE threadhaul_core)
         set_target_properties(${test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)

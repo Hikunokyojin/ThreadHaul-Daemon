@@ -55,6 +55,7 @@ private:
     std::mutex mutex_;
     HANDLE file_ = INVALID_HANDLE_VALUE;
     uint64_t currentSize_ = 0;
+    std::string lastHash_;  // hash chain head (see LogChain.h)
 };
 
 }

@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "Secrets.h"
 
 #include <windows.h>
 #include <nlohmann/json.hpp>
@@ -146,6 +147,15 @@ double OptNumber(const json& obj, const char* key, const std::string& path, doub
     return x;
 }
 
+// Decrypts a "dpapi:" value; plain values pass through.
+std::string Secret(const std::string& value, const char* path) {
+    std::string plain, error;
+    if (!UnprotectSecret(value, plain, error)) {
+        throw ConfigError(std::string(path) + ": " + error);
+    }
+    return plain;
+}
+
 std::string OptString(const json& obj, const char* key, const std::string& path,
                       const std::string& def) {
     const auto it = obj.find(key);
@@ -179,7 +189,9 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
     json root;
     try {
         root = json::parse(jsonText);
-    } catch (const json::parse_error& e) {
+    } catch (const json::exception& e) {
+        // parse_error, and out_of_range for numbers such as 1e309: both are
+        // bad input and must surface as ConfigError, never escape uncaught.
         throw ConfigError(std::string("config is not valid JSON: ") + e.what());
     }
     if (!root.is_object()) {
@@ -275,11 +287,36 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
 
     if (const json* al = OptObject(root, "alerts", "alerts")) {
         cfg.alertPopup = OptBool(*al, "popup", "alerts.popup", true);
-        const std::string url = OptString(*al, "webhook_url", "alerts.webhook_url", "");
+        const std::string url =
+            Secret(OptString(*al, "webhook_url", "alerts.webhook_url", ""), "alerts.webhook_url");
         if (!url.empty() && url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
             throw ConfigError("alerts.webhook_url must start with http:// or https://");
         }
         cfg.alertWebhookUrl = Utf8ToWide(url);
+    }
+
+    if (const json* id = OptObject(root, "identity", "identity")) {
+        for (const auto& [name, spec] : id->items()) {
+            const std::string where = "identity." + name;
+            if (name.size() < 5 || name.find_first_of("\\/") != std::string::npos ||
+                _stricmp(name.c_str() + name.size() - 4, ".exe") != 0) {
+                throw ConfigError(where + ": key must be an executable name such as app.exe");
+            }
+            if (!spec.is_object()) throw ConfigError(where + " must be an object");
+            DaemonConfig::PinnedIdentity p;
+            p.name = Utf8ToWide(name);
+            p.path = Utf8ToWide(OptString(spec, "path", where + ".path", ""));
+            p.publisher = Utf8ToWide(OptString(spec, "publisher", where + ".publisher", ""));
+            if (p.path.empty() && p.publisher.empty()) {
+                throw ConfigError(where + " needs a path, a publisher, or both");
+            }
+            if (!p.path.empty() && (p.path.size() < 3 || p.path[1] != L':' || p.path[2] != L'\\')) {
+                if (p.path.rfind(L"\\\\", 0) != 0) {
+                    throw ConfigError(where + ".path must be a full path such as C:\\\\Apps\\\\app.exe");
+                }
+            }
+            cfg.identities.push_back(std::move(p));
+        }
     }
 
     if (const json* c = OptObject(root, "coordination", "coordination")) {
@@ -288,11 +325,15 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
             OptString(*c, "controller_host", "coordination.controller_host", "127.0.0.1"));
         cfg.controllerPort =
             OptInteger(*c, "controller_port", "coordination.controller_port", 1, 65535, 7878);
-        cfg.sharedToken = OptString(*c, "shared_token", "coordination.shared_token", "");
+        cfg.sharedToken = Secret(OptString(*c, "shared_token", "coordination.shared_token", ""),
+                                 "coordination.shared_token");
         cfg.heartbeatSeconds =
             OptInteger(*c, "heartbeat_seconds", "coordination.heartbeat_seconds", 1, 3600, 5);
         if (cfg.coordinationEnabled && cfg.controllerHost.empty()) {
             throw ConfigError("coordination.controller_host must not be empty when enabled");
+        }
+        if (cfg.coordinationEnabled && cfg.sharedToken.size() < 16) {
+            throw ConfigError("coordination.shared_token must be at least 16 characters when enabled");
         }
     }
 

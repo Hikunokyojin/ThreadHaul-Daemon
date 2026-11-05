@@ -5,6 +5,7 @@
 
 #include "HttpServer.h"
 #include "ProcessTable.h"
+#include "SessionGuard.h"
 
 namespace daemon {
 
@@ -24,7 +25,9 @@ class Daemon;
 // this port (blocks DNS rebinding); a cross-site Origin is refused; and
 // every /api/ call must carry the X-ThreadHaul-Token header. The token is
 // random per run and is handed out only over the administrator-only
-// control pipe ("ThreadHaulDaemon.exe dashboard").
+// control pipe ("ThreadHaulDaemon.exe dashboard"). It expires after 30
+// minutes idle or 12 hours total, POST /api/logout revokes it, and 10 bad
+// tokens within a minute lock the API for a minute (HTTP 429).
 class Dashboard {
 public:
     explicit Dashboard(Daemon& daemon);
@@ -45,7 +48,7 @@ private:
     Daemon& daemon_;
     std::unique_ptr<HttpServer> server_;
     telemetry::ProcessTable table_;
-    std::string token_;
+    mutable SessionGuard session_;
     std::wstring root_;
     int port_ = 0;
 };

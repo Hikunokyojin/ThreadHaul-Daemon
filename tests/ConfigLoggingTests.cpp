@@ -2,12 +2,15 @@
 
 #include "Config.h"
 #include "JsonLinesLogger.h"
+#include "LogChain.h"
+#include "Secrets.h"
 
 #include <nlohmann/json.hpp>
 
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -278,7 +281,8 @@ void ParsesOptionalSections() {
                        {"io", {{"enabled", true}, {"critical_io_limit_mb_per_sec", 50}}}};
     cfg["adaptive"] = {{"enabled", true}, {"window_samples", 8}, {"max_adjust_percent", 7.5}};
     cfg["alerts"] = {{"popup", false}, {"webhook_url", "https://example.invalid/hook"}};
-    cfg["coordination"] = {{"enabled", true}, {"controller_host", "ctl"}, {"controller_port", 9000}};
+    cfg["coordination"] = {{"enabled", true}, {"controller_host", "ctl"}, {"controller_port", 9000},
+                           {"shared_token", "0123456789abcdef-secret"}};
     cfg["security"] = {{"require_protected_config", true}};
     const config::DaemonConfig c = config::ParseConfig(cfg.dump());
     Check(!c.cpuPerCore && c.selfMonitorIntervalSec == 10, __func__, "telemetry");
@@ -309,6 +313,8 @@ void RejectsBadOptionalSections() {
     ExpectRejected(__func__, with("triggers", {{"io", {{"critical_io_limit_mb_per_sec", 0}}}}),
                    "triggers.io.critical_io_limit_mb_per_sec");
     ExpectRejected(__func__, with("security", 5), "security");
+    ExpectRejected(__func__, with("coordination", {{"enabled", true}, {"shared_token", "short"}}),
+                   "coordination.shared_token");
 }
 
 void LogsGenericEventsAndTrigger(const fs::path& dir) {
@@ -396,6 +402,111 @@ void SetsProcessRoles() {
     Check(threw, __func__, "path rejected");
 }
 
+std::vector<std::string> RawLines(const fs::path& file) {
+    std::vector<std::string> out;
+    std::ifstream in(file, std::ios::binary);
+    std::string line;
+    while (std::getline(in, line)) out.push_back(line);
+    return out;
+}
+
+logging::ChainReport VerifyText(const std::vector<std::string>& lines,
+                                const std::string& expectedFirst = "") {
+    std::string text;
+    for (const auto& l : lines) text += l + "\n";
+    std::istringstream in(text);
+    return logging::VerifyChain(in, expectedFirst);
+}
+
+void HashChainDetectsTampering(const fs::path& dir) {
+    const char* t = "HashChainDetectsTampering";
+    const fs::path file = dir / "chain.jsonl";
+    {
+        // Lines from before chaining existed, then a chained logger appends.
+        std::ofstream old(file, std::ios::binary);
+        old << "{\"log_type\":\"lifecycle\",\"n\":1}\n{\"log_type\":\"lifecycle\",\"n\":2}\n";
+    }
+    for (int run = 0; run < 2; ++run) {  // two loggers: the chain continues across restarts
+        logging::JsonLinesLogger log(file.wstring(), 1024 * 1024, 3);
+        for (int i = 0; i < 3; ++i) log.LogSample(100 + i, 1.0);
+    }
+    auto lines = RawLines(file);
+    Check(lines.size() == 8, t, "8 lines written");
+    if (lines.size() != 8) return;
+    auto r = VerifyText(lines);
+    Check(r.Ok() && r.chained == 6 && r.unchained == 2, t, "intact chain verifies: " + r.message);
+
+    auto edited = lines;
+    const size_t pos = edited[4].find("\"process_id\":102");
+    Check(pos != std::string::npos, t, "found line to edit");
+    if (pos != std::string::npos) edited[4].replace(pos, 16, "\"process_id\":999");
+    r = VerifyText(edited);
+    Check(!r.Ok() && r.brokenLine == 6, t, "edited line breaks the next link");
+
+    auto removed = lines;
+    removed.erase(removed.begin() + 5);
+    Check(VerifyText(removed).brokenLine == 6, t, "removed line breaks the chain");
+
+    auto stripped = lines;
+    stripped[6] = "{\"log_type\":\"sample\"}";
+    Check(VerifyText(stripped).brokenLine == 7, t, "line without prev_hash after the chain started");
+
+    Check(VerifyText({"not json"}).brokenLine == 1, t, "garbage line rejected");
+}
+
+void HashChainSpansRotation(const fs::path& dir) {
+    const char* t = "HashChainSpansRotation";
+    const fs::path file = dir / "chainrot.jsonl";
+    {
+        logging::JsonLinesLogger log(file.wstring(), 400, 3);
+        for (int i = 0; i < 12; ++i) log.LogSample(2000 + i, 5.0);
+    }
+    const std::string older = file.string() + ".1";
+    Check(fs::exists(older), t, "rotated file exists");
+    const std::string link = logging::LastLineHash(fs::path(older).wstring());
+    Check(VerifyText(RawLines(file), link).Ok(), t, "current file links to the end of .1");
+    Check(!VerifyText(RawLines(file), logging::kGenesisHash).Ok(), t,
+          "wrong predecessor is detected");
+}
+
+void ProtectedSecretsDecrypt() {
+    const char* t = "ProtectedSecretsDecrypt";
+    const std::string token = "0123456789abcdef-secret";
+    const std::string enc = config::ProtectSecret(token);
+    Check(config::IsProtectedSecret(enc) && enc.find(token) == std::string::npos, t,
+          "encrypted value has the prefix and hides the plaintext");
+    std::string plain, err;
+    Check(config::UnprotectSecret(enc, plain, err) && plain == token, t, "round trip");
+    Check(config::UnprotectSecret("plain-value", plain, err) && plain == "plain-value", t,
+          "plain values pass through");
+    Check(!config::UnprotectSecret("dpapi:!!!", plain, err), t, "bad base64 rejected");
+    Check(!config::UnprotectSecret("dpapi:QUJDREVGR0g=", plain, err), t, "non-DPAPI blob rejected");
+
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["coordination"] = {{"enabled", true}, {"controller_host", "ctl"}, {"shared_token", enc}};
+    cfg["alerts"] = {{"webhook_url", config::ProtectSecret("https://example.invalid/hook?k=1")}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.sharedToken == token, t, "config decrypts shared_token");
+    Check(c.alertWebhookUrl == L"https://example.invalid/hook?k=1", t, "config decrypts webhook_url");
+
+    cfg["coordination"]["shared_token"] = "dpapi:QUJDREVGR0g=";
+    ExpectRejected(t, cfg, "coordination.shared_token");
+}
+
+void ParsesIdentitySection() {
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["identity"] = {{"dispatch_api.exe", {{"path", "C:\\Apps\\dispatch_api.exe"}, {"publisher", "Contoso Ltd"}}},
+                       {"invoice_batch.exe", {{"publisher", "Contoso Ltd"}}}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.identities.size() == 2 && c.identities[0].name == L"dispatch_api.exe" &&
+              c.identities[0].path == L"C:\\Apps\\dispatch_api.exe",
+          __func__, "identity entries");
+    auto with = [&](nlohmann::json id) { nlohmann::json x = nlohmann::json::parse(kValidConfig); x["identity"] = id; return x; };
+    ExpectRejected(__func__, with({{"notanexe", {{"publisher", "X"}}}}), "identity.notanexe");
+    ExpectRejected(__func__, with({{"a.exe", nlohmann::json::object()}}), "identity.a.exe");
+    ExpectRejected(__func__, with({{"a.exe", {{"path", "relative\\a.exe"}}}}), "identity.a.exe.path");
+}
+
 }
 
 int main() {
@@ -423,6 +534,10 @@ int main() {
     ParsesOptionalSections();
     RejectsBadOptionalSections();
     LogsGenericEventsAndTrigger(dir);
+    HashChainDetectsTampering(dir);
+    HashChainSpansRotation(dir);
+    ProtectedSecretsDecrypt();
+    ParsesIdentitySection();
     std::error_code ec;
     fs::remove_all(dir, ec);
 

@@ -19,6 +19,7 @@
 #include "AutoProtect.h"
 #include "EventLogWriter.h"
 #include "JsonLinesLogger.h"
+#include "ProcessIdentity.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
 #include "ThresholdTracker.h"
@@ -116,6 +117,7 @@ private:
     std::string DashboardInfo();
     std::unique_ptr<Dashboard> dashboard_;
     std::unique_ptr<AutoProtector> autoProtect_;
+    telemetry::IdentityFilter identity_;
     void OnAutoProtect(const char* event, const AutoProtector::Entry* e, DWORD from, DWORD to,
                        const std::string& detail);
     bool dashboardDirty_ = true;
