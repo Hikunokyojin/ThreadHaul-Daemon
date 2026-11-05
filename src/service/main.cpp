@@ -16,6 +16,7 @@
 #include "Daemon.h"
 #include "LogChain.h"
 #include "Secrets.h"
+#include "SelfCheck.h"
 #include "PriorityControl.h"
 #include "ThreadControl.h"
 #include "ProcessMonitor.h"
@@ -195,6 +196,7 @@ void PrintUsage() {
         L"      Entry point used by the Windows Service (install with scripts\\install.ps1).\n"
         L"  ThreadHaulDaemon.exe validate-config [<path>]\n"
         L"  ThreadHaulDaemon.exe verify-log [<log path>]  check the log's hash chain for tampering\n"
+        L"  ThreadHaulDaemon.exe selfcheck [<config>]  audit this installation's security settings\n"
         L"  ThreadHaulDaemon.exe protect-secret        encrypt a token or webhook URL for the config\n"
         L"      (reads the secret from input; paste the printed dpapi:... value into the config)\n\n"
         L"Manual override (talks to the running daemon; needs Administrator):\n"
@@ -290,6 +292,12 @@ int wmain(int argc, wchar_t* argv[]) {
             std::printf("INVALID: %s\n", e.what());
             return 2;
         }
+    }
+
+    if (command == L"selfcheck") {
+        return daemon::RunSelfCheck(!positional.empty() ? positional[0]
+                                    : !g_configPath.empty() ? g_configPath
+                                                            : daemon::DefaultConfigPath(true));
     }
 
     if (command == L"protect-secret") {

@@ -57,6 +57,7 @@ add_library(threadhaul_core STATIC
     src/service/Daemon.cpp
     src/service/Dashboard.cpp
     src/service/HttpServer.cpp
+    src/service/SelfCheck.cpp
     src/common/SecureChannel.cpp
 )
 target_include_directories(threadhaul_core PUBLIC
