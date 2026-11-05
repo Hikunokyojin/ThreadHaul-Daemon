@@ -230,7 +230,10 @@ int main() {
     std::printf("seed %u, %u iterations\n", seed, n);
 
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        std::printf("FAIL  WSAStartup\n");
+        return 1;
+    }
     ConfigParserSurvives(n * 2);
     LogVerifierSurvives(n);
     SecretDecoderSurvives(n / 4);

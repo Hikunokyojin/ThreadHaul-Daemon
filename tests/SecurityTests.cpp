@@ -225,7 +225,10 @@ void DashboardSessions() {
 
 int main() {
     WSADATA wsa;
-    WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        std::printf("FAIL  WSAStartup\n");
+        return 1;
+    }
     PrimitivesWork();
     HandshakeAndMessages();
     WrongSecretFails();
