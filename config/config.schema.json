@@ -133,6 +133,18 @@
         "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 8787 }
       }
     },
+    "metrics": {
+      "type": "object",
+      "description": "Prometheus endpoint at http://127.0.0.1:<dashboard.port>/metrics.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "token": {
+          "type": "string",
+          "description": "If set, scrapes must send 'Authorization: Bearer <token>'. At least 16 characters, no spaces; may be a dpapi: value from protect-secret.",
+          "anyOf": [{ "const": "" }, { "pattern": "^dpapi:" }, { "pattern": "^\\S{16,}$" }]
+        }
+      }
+    },
     "security": {
       "type": "object",
       "properties": {

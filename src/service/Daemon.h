@@ -19,6 +19,7 @@
 #include "AutoProtect.h"
 #include "EventLogWriter.h"
 #include "JsonLinesLogger.h"
+#include "Metrics.h"
 #include "ProcessIdentity.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
@@ -66,6 +67,10 @@ public:
     // confirmation before managing Windows components and services.
     telemetry::SafetyInfo SafetyOf(const std::string& target);
     std::string ProcessRolesJson();                // lower-cased role lists + managed states
+
+    // ---- Prometheus (/metrics on the dashboard port) ----
+    std::string MetricsText();                     // text exposition format
+    bool MetricsSettings(std::string& token);      // enabled?; token "" = no auth
 
 private:
     void ApplyConfig(const config::DaemonConfig& cfg, bool initial);
@@ -118,6 +123,8 @@ private:
     std::unique_ptr<Dashboard> dashboard_;
     std::unique_ptr<AutoProtector> autoProtect_;
     telemetry::IdentityFilter identity_;
+    std::mutex countersMutex_;   // separate from mutex_: bumped from logging paths
+    MetricCounters counters_;
     void OnAutoProtect(const char* event, const AutoProtector::Entry* e, DWORD from, DWORD to,
                        const std::string& detail);
     bool dashboardDirty_ = true;

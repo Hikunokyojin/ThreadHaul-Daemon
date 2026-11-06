@@ -451,6 +451,10 @@ void Daemon::Poll() {
     }
 
     for (const auto& fired : tracker_.Add(pressure, effective_)) {
+        {
+            std::lock_guard<std::mutex> lock(countersMutex_);
+            counters_.logEvents["threshold_event"]++;
+        }
         if (logger_) {
             logger_->LogThresholdEvent(pid, fired.type, fired.consecutiveSamples, Round1(pressure));
         }
@@ -519,6 +523,10 @@ void Daemon::LogSelf() {
 }
 
 void Daemon::Log(const char* type, const ordered_json& fields) {
+    {
+        std::lock_guard<std::mutex> lock(countersMutex_);
+        counters_.logEvents[type]++;
+    }
     if (logger_) {
         logger_->LogEvent(type, fields);
     }
@@ -526,6 +534,11 @@ void Daemon::Log(const char* type, const ordered_json& fields) {
 
 void Daemon::OnTransition(const std::wstring& name, DWORD pid, actuator::ProcessState from,
                           actuator::ProcessState to, double cpu, bool ok) {
+    {
+        std::lock_guard<std::mutex> lock(countersMutex_);
+        counters_.logEvents["actuator_action"]++;
+        counters_.actions[{logging::ActionName(to), std::string(trigger_)}]++;
+    }
     if (logger_) {
         logger_->LogActuatorAction(pid, name, criticalPid_, from, to, Round1(cpu), ok, trigger_);
     }
@@ -650,6 +663,22 @@ std::string Daemon::DashboardInfo() {
     }
     return Reply(false, dashboardError_.empty() ? "dashboard is starting; try again" : dashboardError_)
         .dump();
+}
+
+std::string Daemon::MetricsText() {
+    const nlohmann::json status = nlohmann::json::parse(DashboardStatus(), nullptr, false);
+    MetricCounters snapshot;
+    {
+        std::lock_guard<std::mutex> lock(countersMutex_);
+        snapshot = counters_;
+    }
+    return PrometheusText(status.is_discarded() ? nlohmann::json::object() : status, snapshot);
+}
+
+bool Daemon::MetricsSettings(std::string& token) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    token = cfg_.metricsToken;
+    return cfg_.metricsEnabled;
 }
 
 std::string Daemon::DashboardStatus() {

@@ -116,6 +116,25 @@ HttpResponse Dashboard::Handle(const HttpRequest& req) {
     if (!Authorized(req, denied)) {
         return denied;
     }
+    // Prometheus scrape endpoint: off unless metrics.enabled; if metrics.token
+    // is set, the scraper must send "Authorization: Bearer <token>".
+    if (req.path == "/metrics") {
+        std::string token;
+        if (!daemon_.MetricsSettings(token)) {
+            return Error(404, "metrics are disabled (set metrics.enabled in config.json)");
+        }
+        if (req.method != "GET") return Error(405, "method not allowed");
+        if (!token.empty() && !ConstantTimeEquals(req.Header("authorization"), "Bearer " + token)) {
+            HttpResponse r = Error(401, "metrics need Authorization: Bearer <metrics.token>");
+            r.headers.emplace_back("WWW-Authenticate", "Bearer realm=\"threadhaul-metrics\"");
+            return r;
+        }
+        HttpResponse r;
+        r.contentType = kPrometheusContentType;
+        r.body = daemon_.MetricsText();
+        return r;
+    }
+
     if (req.path.rfind("/api/", 0) != 0) {
         if (req.method != "GET") return Error(405, "method not allowed");
         return ServeFile(req.path == "/" ? "/index.html" : req.path);

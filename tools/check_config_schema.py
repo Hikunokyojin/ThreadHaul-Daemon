@@ -46,6 +46,8 @@ expect(edited(lambda c: c.update(identity={"notexe": {"path": r"C:\a.exe"}})), F
 expect(edited(lambda c: c["alerts"].update(webhook_url="ftp://host/hook")), False, "non-HTTP webhook")
 expect(edited(lambda c: c["thresholds"]["high"].update(percent=0)), False, "threshold of 0%")
 expect(edited(lambda c: c.pop("logging")), False, "missing logging section")
+expect(edited(lambda c: c.update(metrics={"enabled": True, "token": "short"})), False, "metrics token under 16 chars")
+expect(edited(lambda c: c.update(metrics={"enabled": True, "token": "scrape-token-0123456789"})), True, "metrics with a token")
 expect(edited(lambda c: c.update(
     identity={"dispatch_api.exe": {"path": r"C:\Apps\d.exe", "publisher": "Contoso"},
               "b.exe": {"path": r"\\server\share\b.exe"}},

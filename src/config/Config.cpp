@@ -368,6 +368,17 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
         cfg.dashboardPort = OptInteger(*d, "port", "dashboard.port", 1024, 65535, 8787);
     }
 
+    if (const json* m = OptObject(root, "metrics", "metrics")) {
+        cfg.metricsEnabled = OptBool(*m, "enabled", "metrics.enabled", false);
+        cfg.metricsToken = Secret(OptString(*m, "token", "metrics.token", ""), "metrics.token");
+        if (!cfg.metricsToken.empty() && cfg.metricsToken.size() < 16) {
+            throw ConfigError("metrics.token must be at least 16 characters (or empty for no token)");
+        }
+        if (cfg.metricsToken.find_first_of(" \t\r\n") != std::string::npos) {
+            throw ConfigError("metrics.token must not contain spaces or line breaks");
+        }
+    }
+
     return cfg;
 }
 

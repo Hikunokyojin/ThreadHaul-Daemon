@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "JsonLinesLogger.h"
 #include "LogChain.h"
+#include "Metrics.h"
 #include "Secrets.h"
 
 #include <nlohmann/json.hpp>
@@ -523,6 +524,62 @@ void ParsesIdentitySection() {
     ExpectRejected(__func__, with({{"a.exe", {{"path", "relative\\a.exe"}}}}), "identity.a.exe.path");
 }
 
+void ParsesMetricsSection() {
+    Check(!config::ParseConfig(kValidConfig).metricsEnabled, __func__, "metrics off by default");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["metrics"] = {{"enabled", true}, {"token", "scrape-token-0123456789"}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.metricsEnabled && c.metricsToken == "scrape-token-0123456789", __func__, "metrics values");
+    cfg["metrics"] = {{"enabled", true}, {"token", "short"}};
+    ExpectRejected(__func__, cfg, "metrics.token");
+    cfg["metrics"] = {{"enabled", true}, {"token", "has a space in it 0123"}};
+    ExpectRejected(__func__, cfg, "metrics.token");
+}
+
+void PrometheusTextFormat() {
+    const char* t = "PrometheusTextFormat";
+    const nlohmann::json status = nlohmann::json::parse(R"({
+        "ok": true, "pressure_percent": 92.5, "offset_percent": 5,
+        "thresholds": {"high": 85, "critical": 90, "low": 60},
+        "coordination_connected": false,
+        "critical": [{"name": "dispatch_api.exe", "pid": 4821, "cpu_percent": 92.5}],
+        "batch": [{"name": "inv\"oice.exe", "pid": 5190, "state": "throttled", "manual_hold": false}],
+        "service": {"uptime_seconds": 120, "working_set_mb": 2},
+        "system": {"cpu_percent": 71.3, "memory_load_percent": 40, "memory_used_gb": 1, "memory_total_gb": 16, "logical_cores": 8},
+        "auto_protect": {"enabled": true, "level": "throttling", "processes": [{"pid": 1}]}
+    })");
+    daemon::MetricCounters counters;
+    counters.actions[{"priority_lowered", "automatic"}] = 3;
+    counters.logEvents["sample"] = 42;
+    const std::string text = daemon::PrometheusText(status, counters);
+    auto has = [&](const std::string& s) { return text.find(s) != std::string::npos; };
+    Check(has("# TYPE threadhaul_up gauge\nthreadhaul_up 1\n"), t, "up gauge");
+    Check(has("threadhaul_pressure_percent 92.5\n"), t, "pressure");
+    Check(has("threadhaul_threshold_percent{level=\"critical\"} 90\n"), t, "threshold label");
+    Check(has("threadhaul_critical_process_cpu_percent{name=\"dispatch_api.exe\",pid=\"4821\"} 92.5\n"), t,
+          "critical cpu with labels");
+    Check(has("threadhaul_batch_processes{state=\"throttled\"} 1\n") &&
+              has("threadhaul_batch_processes{state=\"suspended\"} 0\n"),
+          t, "batch counts include zero states");
+    Check(has("name=\"inv\\\"oice.exe\""), t, "quote in label escaped");
+    Check(has("threadhaul_system_memory_total_bytes 17179869184\n"), t, "GiB converted to bytes");
+    Check(has("threadhaul_service_working_set_bytes 2097152\n"), t, "MB converted to bytes");
+    Check(has("threadhaul_auto_protect_level{level=\"throttling\"} 1\n") &&
+              has("threadhaul_auto_protect_level{level=\"idle\"} 0\n"),
+          t, "auto-protect level state set");
+    Check(has("# TYPE threadhaul_actions_total counter\n") &&
+              has("threadhaul_actions_total{action=\"priority_lowered\",trigger=\"automatic\"} 3\n"),
+          t, "action counter");
+    Check(has("threadhaul_log_events_total{log_type=\"sample\"} 42\n"), t, "log event counter");
+    Check(text.back() == '\n' && !has("\r"), t, "LF line endings, ends with newline");
+    Check(daemon::PrometheusLabel("a\\b\nc") == "a\\\\b\\nc", t, "backslash and newline escaped");
+
+    const std::string minimal = daemon::PrometheusText(nlohmann::json::object(), {});
+    Check(minimal.find("threadhaul_up 1") != std::string::npos &&
+              minimal.find("threadhaul_pressure_percent") == std::string::npos,
+          t, "missing fields are skipped, not invented");
+}
+
 }
 
 int main() {
@@ -554,6 +611,8 @@ int main() {
     HashChainSpansRotation(dir);
     ProtectedSecretsDecrypt();
     ParsesIdentitySection();
+    ParsesMetricsSection();
+    PrometheusTextFormat();
     std::error_code ec;
     fs::remove_all(dir, ec);
 

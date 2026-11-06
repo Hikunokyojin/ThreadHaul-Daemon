@@ -91,6 +91,10 @@ struct DaemonConfig {
     // dashboard.*: local web dashboard served on 127.0.0.1 only.
     bool dashboardEnabled = true;
     int  dashboardPort = 8787;
+
+    // Prometheus endpoint at http://127.0.0.1:<dashboard port>/metrics.
+    bool metricsEnabled = false;
+    std::string metricsToken;  // if set, scrapes need "Authorization: Bearer <token>"
 };
 
 // Thrown for unreadable, malformed, incomplete or out-of-range config. The

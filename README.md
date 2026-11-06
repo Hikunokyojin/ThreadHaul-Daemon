@@ -335,6 +335,7 @@ The service ignores the key. Rules that compare two fields (for example `low` < 
 | `coordination.*` | Central controller connection (see [Multi-server deployments](#multi-server-deployments)) | disabled |
 | `dashboard.enabled` / `port` | Dashboard on `127.0.0.1` | `true`, 8787 (1024–65535) |
 | `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
+| `metrics.enabled` / `token` | Prometheus endpoint at `/metrics` on the dashboard port (see [Prometheus metrics](#prometheus-metrics)) | `false`, none |
 
 **Encrypted secrets.** `coordination.shared_token` and `alerts.webhook_url` may hold a `dpapi:...` value instead of plain text. Run `ThreadHaulDaemon.exe protect-secret`, type the secret (it isn't echoed), and paste the printed value into `config.json`. The value only decrypts on the machine that created it.
 
@@ -386,6 +387,40 @@ python .\tools\log_viewer.py C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jso
 ```
 
 The log viewer needs `matplotlib`. It prints every state change and renders three charts: critical load against the thresholds, batch states over time, and the service's own footprint.
+
+### Prometheus metrics
+
+Turn on the scrape endpoint in `config.json`:
+
+```json
+"metrics": { "enabled": true, "token": "<16+ characters, or a dpapi: value from protect-secret>" }
+```
+
+It serves `http://127.0.0.1:<dashboard.port>/metrics` in the Prometheus text format. Leave `token` empty to need no token; the endpoint is read-only and loopback-only either way. A Prometheus server or Grafana Alloy agent on the same machine scrapes it like this:
+
+```yaml
+scrape_configs:
+  - job_name: threadhaul
+    static_configs: [{ targets: ["127.0.0.1:8787"] }]
+    authorization: { credentials: "<metrics.token>" }   # omit if no token is set
+```
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `threadhaul_up`, `threadhaul_uptime_seconds` | gauge | Service is answering; seconds since start |
+| `threadhaul_pressure_percent` | gauge | Current critical-process pressure (highest signal) |
+| `threadhaul_threshold_percent{level}` | gauge | Effective `high`, `critical` and `low` thresholds |
+| `threadhaul_threshold_offset_percent` | gauge | How far adaptive thresholds or the controller bias lowered them |
+| `threadhaul_critical_process_cpu_percent{name,pid}` | gauge | CPU of each critical process instance |
+| `threadhaul_batch_processes{state}` | gauge | Managed batch processes that are `normal`, `throttled` or `suspended` |
+| `threadhaul_batch_process_state{name,pid,state,manual_hold}` | gauge | 1 per managed batch process, in its current state |
+| `threadhaul_actions_total{action,trigger}` | counter | State changes since start (`priority_lowered`, `threads_suspended`, `recovered`) by trigger |
+| `threadhaul_log_events_total{log_type}` | counter | Log entries written since start, by type |
+| `threadhaul_auto_protect_enabled`, `_level{level}`, `_processes` | gauge | Auto-protect on/off, current level, programs lowered |
+| `threadhaul_system_cpu_percent`, `_memory_load_percent`, `_memory_used_bytes`, `_memory_total_bytes`, `_logical_cores` | gauge | Whole-machine figures (memory accurate to about 0.1 GB) |
+| `threadhaul_service_working_set_bytes`, `threadhaul_coordination_connected` | gauge | The service's own memory; 1 when connected to the controller |
+
+Counters restart from zero when the service restarts; Prometheus `rate()` and `increase()` handle that. The endpoint is not exposed on the network. To scrape from another machine, run an agent locally, for example Grafana Alloy or a Prometheus server in agent mode with remote-write.
 
 ### Windows Event Log
 
