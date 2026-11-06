@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/Hikunokyojin/ThreadHaul-Daemon/main/config/config.schema.json",
+  "title": "ThreadHaul configuration",
+  "description": "config.json for ThreadHaulDaemon. The service validates the same rules at load time (ThreadHaulDaemon.exe validate-config); cross-field rules such as low < high <= critical are checked there, not here.",
+  "type": "object",
+  "required": ["polling", "thresholds", "processes", "logging"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "polling": {
+      "type": "object",
+      "required": ["interval_ms"],
+      "properties": {
+        "interval_ms": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 1000, "description": "Time between samples, in milliseconds." }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "description": "Pressure thresholds. Must satisfy low < high <= critical.",
+      "required": ["high", "critical", "low"],
+      "properties": {
+        "high": { "$ref": "#/$defs/threshold", "description": "Throttle batch processes (Idle priority) when pressure stays at or above this." },
+        "critical": { "$ref": "#/$defs/threshold", "description": "Suspend batch processes when pressure stays at or above this after throttling." },
+        "low": { "$ref": "#/$defs/threshold", "description": "Recover batch processes when pressure stays below this." }
+      }
+    },
+    "processes": {
+      "type": "object",
+      "required": ["critical", "batch"],
+      "properties": {
+        "critical": { "$ref": "#/$defs/exeList", "description": "Programs to keep responsive. A name may not also be in batch." },
+        "batch": { "$ref": "#/$defs/exeList", "description": "Programs that are throttled and suspended to protect the critical ones." },
+        "protected": { "$ref": "#/$defs/exeList", "description": "Programs that are never managed." }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "required": ["log_path", "max_file_size_mb", "max_rotated_files"],
+      "properties": {
+        "log_path": { "type": "string", "minLength": 1, "description": "JSON Lines log file." },
+        "max_file_size_mb": { "type": "integer", "minimum": 1, "maximum": 1024, "default": 50 },
+        "max_rotated_files": { "type": "integer", "minimum": 0, "maximum": 100, "default": 5 }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "properties": {
+        "cpu_normalization": { "enum": ["per_core", "total"], "default": "per_core", "description": "per_core: 100% = one core. total: 100% = the whole machine." },
+        "log_samples": { "type": "boolean", "default": true },
+        "self_monitor_interval_seconds": { "type": "integer", "minimum": 0, "maximum": 86400, "default": 30, "description": "0 turns the service's own footprint logging off." }
+      }
+    },
+    "triggers": {
+      "type": "object",
+      "properties": {
+        "memory": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "system_load_limit_percent": { "type": "number", "minimum": 1, "maximum": 100, "default": 95 },
+            "critical_working_set_limit_mb": { "type": "number", "minimum": 0, "maximum": 1048576, "default": 0, "description": "0 = off." }
+          }
+        },
+        "io": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "critical_io_limit_mb_per_sec": { "type": "number", "minimum": 0.1, "maximum": 100000, "default": 200 }
+          }
+        }
+      }
+    },
+    "adaptive": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "window_samples": { "type": "integer", "minimum": 3, "maximum": 600, "default": 10 },
+        "horizon_samples": { "type": "integer", "minimum": 1, "maximum": 60, "default": 3 },
+        "max_adjust_percent": { "type": "number", "minimum": 0, "maximum": 50, "default": 10 }
+      }
+    },
+    "alerts": {
+      "type": "object",
+      "properties": {
+        "popup": { "type": "boolean", "default": true },
+        "webhook_url": { "$ref": "#/$defs/webhook", "default": "" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "description": "Pin executable names to a full path and/or the publisher of their embedded signature.",
+      "propertyNames": { "pattern": "^[^\\\\/]+\\.[eE][xX][eE]$" },
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "path": { "type": "string", "pattern": "^([A-Za-z]:\\\\|\\\\\\\\)", "description": "Full path, e.g. C:\\Apps\\app.exe." },
+          "publisher": { "type": "string", "minLength": 1, "description": "Signer display name, e.g. Contoso Ltd." }
+        },
+        "additionalProperties": false
+      }
+    },
+    "coordination": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "controller_host": { "type": "string", "minLength": 1, "default": "127.0.0.1" },
+        "controller_port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 7878 },
+        "shared_token": { "type": "string", "description": "At least 16 characters when enabled, or a dpapi: value from protect-secret." },
+        "heartbeat_seconds": { "type": "integer", "minimum": 1, "maximum": 3600, "default": 5 }
+      }
+    },
+    "auto_protect": {
+      "type": "object",
+      "description": "Automatic CPU protection. Must satisfy recover_below_percent < throttle_at_percent <= idle_at_percent.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "throttle_at_percent": { "type": "number", "minimum": 10, "maximum": 100, "default": 90 },
+        "throttle_samples": { "type": "integer", "minimum": 1, "maximum": 600, "default": 5 },
+        "use_idle": { "type": "boolean", "default": true },
+        "idle_at_percent": { "type": "number", "minimum": 10, "maximum": 100, "default": 97 },
+        "idle_samples": { "type": "integer", "minimum": 1, "maximum": 600, "default": 10 },
+        "recover_below_percent": { "type": "number", "minimum": 1, "maximum": 100, "default": 75 },
+        "recover_samples": { "type": "integer", "minimum": 1, "maximum": 600, "default": 10 },
+        "max_processes": { "type": "integer", "minimum": 1, "maximum": 50, "default": 3 },
+        "min_process_cpu_percent": { "type": "number", "minimum": 1, "maximum": 6400, "default": 50, "description": "Per-core CPU %, so it can exceed 100 on multi-core machines." }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 8787 }
+      }
+    },
+    "security": {
+      "type": "object",
+      "properties": {
+        "require_protected_config": { "type": "boolean", "default": false, "description": "Refuse a config file that non-administrators can modify." }
+      }
+    }
+  },
+  "$defs": {
+    "threshold": {
+      "type": "object",
+      "required": ["percent", "consecutive_samples"],
+      "properties": {
+        "percent": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
+        "consecutive_samples": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    },
+    "exeList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "pattern": "^[^\\\\/]+$", "description": "Executable name, not a path, e.g. app.exe." }
+    },
+    "webhook": {
+      "type": "string",
+      "anyOf": [
+        { "const": "" },
+        { "pattern": "^https?://" },
+        { "pattern": "^dpapi:" }
+      ]
+    }
+  }
+}

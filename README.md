@@ -294,6 +294,14 @@ How the commands behave:
 
 The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`; a fully commented-by-example copy is [`config/config.example.json`](config/config.example.json). Edit it from an elevated editor (for example `notepad` in an Administrator PowerShell). Changes apply within one poll interval; there is no need to restart.
 
+**Editor support.** [`config/config.schema.json`](config/config.schema.json) is a JSON Schema for the whole file. Add this as the first key and editors such as VS Code autocomplete every setting, show its description and default, and underline out-of-range values while you type:
+
+```json
+"$schema": "https://raw.githubusercontent.com/Hikunokyojin/ThreadHaul-Daemon/main/config/config.schema.json"
+```
+
+The service ignores the key. Rules that compare two fields (for example `low` < `high` ≤ `critical`) are checked only by the service, so still run `validate-config` before deploying.
+
 | Key | Description | Default (range) |
 |---|---|---|
 | `polling.interval_ms` | Time between samples | 1000 (100–60000) |

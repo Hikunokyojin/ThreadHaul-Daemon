@@ -383,7 +383,7 @@ std::string SetProcessRole(const std::string& jsonText, const std::string& proce
     ordered root;
     try {
         root = ordered::parse(jsonText);
-    } catch (const ordered::parse_error& e) {
+    } catch (const nlohmann::json::exception& e) {  // parse_error and out_of_range (e.g. 1e309)
         throw ConfigError(std::string("config is not valid JSON: ") + e.what());
     }
     if (!root.is_object() || !root.contains("processes") || !root["processes"].is_object()) {

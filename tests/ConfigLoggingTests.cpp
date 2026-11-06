@@ -390,6 +390,22 @@ void SetsProcessRoles() {
     c = config::ParseConfig(out);
     Check(c.protectedProcesses.size() == 2, __func__, "added to protected");
 
+    // The dashboard's rewrite keeps the editor schema pointer, and bad
+    // numbers are a ConfigError rather than an escaping JSON exception.
+    const std::string withSchema =
+        "{\"$schema\":\"https://example.invalid/s.json\"," + base.substr(base.find('{') + 1);
+    const std::string kept = config::SetProcessRole(withSchema, "a.exe", "batch");
+    Check(kept.find("\"$schema\"") != std::string::npos && kept.find("\"$schema\"") < kept.find("\"polling\""),
+          __func__, "$schema kept first");
+    bool configError = false;
+    try {
+        config::SetProcessRole("{\"processes\":{\"critical\":[],\"batch\":[]},\"x\":1e309}", "a.exe", "batch");
+    } catch (const config::ConfigError&) {
+        configError = true;
+    } catch (...) {
+    }
+    Check(configError, __func__, "out-of-range number reported as ConfigError");
+
     Check(out.find("\"polling\"") < out.find("\"thresholds\"") &&
               out.find("\"thresholds\"") < out.find("\"processes\""),
           __func__, "key order preserved");

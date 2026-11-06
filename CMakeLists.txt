@@ -108,7 +108,7 @@ endif()
 # --------------------------------------------------------------------------
 install(TARGETS ThreadHaulDaemon ThreadHaulController RUNTIME DESTINATION bin)
 install(DIRECTORY web/dashboard/ DESTINATION bin/dashboard)
-install(FILES config/config.example.json DESTINATION config)
+install(FILES config/config.example.json config/config.schema.json DESTINATION config)
 install(FILES scripts/install.ps1 scripts/uninstall.ps1 DESTINATION scripts)
 install(TARGETS critical_simulator batch_simulator RUNTIME DESTINATION tools)
 install(FILES tools/log_viewer.py DESTINATION tools)

@@ -94,3 +94,8 @@ jobs:
 
       - name: Log viewer compiles
         run: python -m py_compile tools/log_viewer.py
+
+      - name: Config schema matches the example and rejects bad configs
+        run: |
+          python -m pip install --quiet jsonschema
+          python tools/check_config_schema.py
