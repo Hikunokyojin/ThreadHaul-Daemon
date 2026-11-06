@@ -120,6 +120,38 @@ HttpResponse Dashboard::Handle(const HttpRequest& req) {
         if (req.method != "GET") return Error(405, "method not allowed");
         return ServeFile(req.path == "/" ? "/index.html" : req.path);
     }
+
+    // Versioning: /api/v1/<route> is the stable API. The original /api/<route>
+    // paths remain as deprecated aliases of v1 so existing scripts keep working.
+    std::string route;
+    bool legacy = false;
+    if (req.path.rfind("/api/v1/", 0) == 0) {
+        route = req.path.substr(7);
+    } else if (req.path.size() > 6 && req.path.compare(0, 6, "/api/v") == 0 &&
+               isdigit(static_cast<unsigned char>(req.path[6]))) {
+        return Error(404, "unsupported API version; this service implements /api/v1");
+    } else {
+        route = req.path.substr(4);
+        legacy = true;
+    }
+
+    // The OpenAPI description is public documentation: no session key needed
+    // (the loopback, Host and Origin checks above still apply).
+    if (!legacy && route == "/openapi.json") {
+        if (req.method != "GET") return Error(405, "method not allowed");
+        return ServeFile("/openapi.json");
+    }
+
+    HttpResponse res = Api(req, route);
+    res.headers.emplace_back("API-Version", "1");
+    if (legacy) {
+        res.headers.emplace_back("Deprecation", "true");
+        res.headers.emplace_back("Link", "</api/v1" + route + ">; rel=\"successor-version\"");
+    }
+    return res;
+}
+
+HttpResponse Dashboard::Api(const HttpRequest& req, const std::string& route) {
     switch (session_.Check(req.Header("x-threadhaul-token"))) {
     case SessionGuard::Result::Ok:
         break;
@@ -132,20 +164,20 @@ HttpResponse Dashboard::Handle(const HttpRequest& req) {
         return Error(401, "missing or invalid dashboard token; open the dashboard with "
                           "'ThreadHaulDaemon.exe dashboard'");
     }
-    if (req.method == "POST" && req.path == "/api/logout") {
+    if (req.method == "POST" && route == "/logout") {
         session_.Revoke();
         return Json(200, json{{"ok", true}, {"message", "signed out"}});
     }
 
-    if (req.method == "GET" && req.path == "/api/status") {
+    if (req.method == "GET" && route == "/status") {
         HttpResponse r;
         r.body = daemon_.DashboardStatus();
         return r;
     }
-    if (req.method == "GET" && req.path == "/api/processes") {
+    if (req.method == "GET" && route == "/processes") {
         return Processes();
     }
-    if (req.method == "GET" && req.path == "/api/log") {
+    if (req.method == "GET" && route == "/log") {
         const std::string off = req.QueryParam("offset");
         long long offset = -1;
         if (!off.empty()) {
@@ -155,7 +187,7 @@ HttpResponse Dashboard::Handle(const HttpRequest& req) {
         r.body = daemon_.ReadLog(offset);
         return r;
     }
-    if (req.method == "POST" && (req.path == "/api/command" || req.path == "/api/role")) {
+    if (req.method == "POST" && (route == "/command" || route == "/role")) {
         if (req.Header("content-type").rfind("application/json", 0) != 0) {
             return Error(400, "Content-Type must be application/json");
         }
@@ -164,7 +196,7 @@ HttpResponse Dashboard::Handle(const HttpRequest& req) {
             return Error(400, "body must be a JSON object");
         }
         HttpResponse r;
-        if (req.path == "/api/command") {
+        if (route == "/command") {
             const std::string verb = body.value("command", "");
             const std::string target = body.value("target", "");
             if (verb != "throttle" && verb != "suspend" && verb != "resume" && verb != "release" &&
@@ -200,6 +232,7 @@ HttpResponse Dashboard::ServeFile(const std::string& path) {
         {"/index.html", L"index.html", "text/html; charset=utf-8"},
         {"/app.js", L"app.js", "text/javascript; charset=utf-8"},
         {"/styles.css", L"styles.css", "text/css; charset=utf-8"},
+        {"/openapi.json", L"openapi.json", "application/json; charset=utf-8"},
     };
     for (const Asset& a : assets) {
         if (path != a.path) continue;

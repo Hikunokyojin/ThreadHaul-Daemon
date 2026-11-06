@@ -1,0 +1,187 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ThreadHaul local API",
+    "version": "1.0.0",
+    "description": "The API behind the ThreadHaul dashboard. It listens on 127.0.0.1 only. Every call except this document needs the per-session key from 'ThreadHaulDaemon.exe dashboard' in the X-ThreadHaul-Token header. The key expires after 30 minutes idle or 12 hours, and 10 bad keys within a minute lock the API for a minute. The unversioned /api/<route> paths are deprecated aliases of /api/v1/<route> and answer with a Deprecation header.",
+    "license": { "name": "Apache-2.0", "identifier": "Apache-2.0" }
+  },
+  "servers": [{ "url": "http://127.0.0.1:8787/api/v1", "description": "Default dashboard port (dashboard.port in config.json)" }],
+  "security": [{ "sessionKey": [] }],
+  "paths": {
+    "/openapi.json": {
+      "get": {
+        "summary": "This document",
+        "security": [],
+        "responses": { "200": { "description": "OpenAPI description", "content": { "application/json": {} } } }
+      }
+    },
+    "/status": {
+      "get": {
+        "summary": "Live state",
+        "description": "Pressure, effective thresholds, critical and batch processes, auto-protect state, system CPU and memory, and service details.",
+        "responses": {
+          "200": { "description": "Current state", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/Locked" }
+        }
+      }
+    },
+    "/processes": {
+      "get": {
+        "summary": "Every running process",
+        "responses": {
+          "200": {
+            "description": "System totals and one row per process",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProcessList" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/Locked" }
+        }
+      }
+    },
+    "/log": {
+      "get": {
+        "summary": "Activity log entries",
+        "parameters": [{
+          "name": "offset", "in": "query", "required": false,
+          "description": "Byte offset to read from. -1 or absent returns the tail. Pass the offset from the previous response to stream new entries.",
+          "schema": { "type": "integer", "format": "int64" }
+        }],
+        "responses": {
+          "200": {
+            "description": "Entries after the offset",
+            "content": { "application/json": { "schema": {
+              "type": "object",
+              "properties": {
+                "entries": { "type": "array", "items": { "type": "object", "description": "One JSON Lines log entry (log_type, timestamp, fields, prev_hash)" } },
+                "offset": { "type": "integer", "format": "int64", "description": "Byte offset to pass on the next call" },
+                "size": { "type": "integer", "format": "int64", "description": "Current log file size in bytes" },
+                "reset": { "type": "boolean", "description": "True after the log rotated; continue from offset" },
+                "note": { "type": "string" }
+              }
+            } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/Locked" }
+        }
+      }
+    },
+    "/command": {
+      "post": {
+        "summary": "Throttle, suspend, resume, release or exempt a process",
+        "description": "A manual action is held until 'release'. Acting on a system process or service returns needs_confirmation until the request is repeated with confirm=true. Essential processes and configured critical processes are always refused.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "required": ["command", "target"],
+            "properties": {
+              "command": { "enum": ["throttle", "suspend", "resume", "release", "exempt"] },
+              "target": { "type": "string", "description": "A PID, or an executable name (every instance)", "examples": ["invoice_batch.exe", "4821"] },
+              "confirm": { "type": "boolean", "default": false }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Result" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/Locked" }
+        }
+      }
+    },
+    "/role": {
+      "post": {
+        "summary": "Assign a role to a program",
+        "description": "Writes the change to config.json (keeping its permissions) and applies it immediately.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": {
+            "type": "object",
+            "required": ["name", "role"],
+            "properties": {
+              "name": { "type": "string", "description": "Executable name, not a path", "examples": ["chrome.exe"] },
+              "role": { "enum": ["critical", "batch", "protected", "none"] },
+              "confirm": { "type": "boolean", "default": false }
+            }
+          } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Result" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/Locked" }
+        }
+      }
+    },
+    "/logout": {
+      "post": {
+        "summary": "End the session",
+        "description": "The key stops working immediately.",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Result" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionKey": { "type": "apiKey", "in": "header", "name": "X-ThreadHaul-Token", "description": "Per-session key handed out by 'ThreadHaulDaemon.exe dashboard' (the #token= part of the link)." }
+    },
+    "schemas": {
+      "Result": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "message": { "type": "string" },
+          "needs_confirmation": { "type": "boolean", "description": "Repeat the request with confirm=true to proceed" },
+          "safety": { "enum": ["essential", "system", "service", "normal"] }
+        }
+      },
+      "Process": {
+        "type": "object",
+        "properties": {
+          "pid": { "type": "integer" },
+          "name": { "type": "string" },
+          "cpu_percent": { "type": "number", "description": "Per-core CPU %" },
+          "memory_mb": { "type": "number" },
+          "accessible": { "type": "boolean" },
+          "role": { "type": "string", "description": "critical, batch, protected, or empty" },
+          "state": { "type": "string", "description": "Managed state, if any (throttled, suspended, ...)" },
+          "safety": { "enum": ["essential", "system", "service", "normal"] },
+          "safety_reason": { "type": "string" },
+          "path": { "type": "string" },
+          "system_protected": { "type": "boolean" }
+        }
+      },
+      "ProcessList": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "system": {
+            "type": "object",
+            "properties": {
+              "cpu_percent": { "type": "number" },
+              "memory_load_percent": { "type": "number" },
+              "memory_used_gb": { "type": "number" },
+              "memory_total_gb": { "type": "number" },
+              "logical_cores": { "type": "integer" },
+              "process_count": { "type": "integer" }
+            }
+          },
+          "processes": { "type": "array", "items": { "$ref": "#/components/schemas/Process" } }
+        }
+      }
+    },
+    "responses": {
+      "Result": { "description": "Outcome", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } },
+      "BadRequest": { "description": "Invalid request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } },
+      "Unauthorized": { "description": "Missing, invalid or expired session key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } },
+      "Locked": { "description": "Too many invalid keys; try again in a minute", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Result" } } } }
+    }
+  }
+}

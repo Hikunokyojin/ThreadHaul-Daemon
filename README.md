@@ -253,16 +253,24 @@ This command asks the service for a per-session access key over the administrato
 | **Processes** | Every running process with CPU % (per core), memory, path and safety level, sortable and searchable. Assign a role to any program: **Critical**, **Batch**, **Protected** or **Unassigned**. The role is written to `config.json` (keeping its permissions) and applied immediately. |
 | **Activity log** | The JSON Lines log as a readable, colour-coded table, newest first. Filter by event type, search text or time range; click a row for its raw JSON; export the filtered rows as CSV. New entries stream in live. |
 
-**HTTP API.** Every request must carry the `X-ThreadHaul-Token` header.
+**HTTP API (v1).** The API is versioned under `/api/v1`. Every request must carry the session key in the `X-ThreadHaul-Token` header, except the API description itself. Every response carries `API-Version: 1`.
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/status` | Pressure, thresholds, critical and batch processes, auto-protect state, system CPU and memory, service details |
-| `GET /api/processes` | Every running process with CPU %, memory, path, role, safety level and managed state |
-| `GET /api/log?offset=N` | Log entries after byte offset `N`. `-1` returns the tail. The response includes the next offset and a `reset` flag after rotation. |
-| `POST /api/command` | `{"command":"suspend","target":"<pid or exe>","confirm":false}`. Commands are `throttle`, `suspend`, `resume`, `release` and `exempt`. |
-| `POST /api/role` | `{"name":"<exe>","role":"critical","confirm":false}`. Roles are `critical`, `batch`, `protected` and `none`. |
-| `POST /api/logout` | Ends the session: the key stops working immediately |
+| `GET /api/v1/openapi.json` | OpenAPI 3.1 description of the API. No key needed; import it into Postman, Swagger UI or a client generator. |
+| `GET /api/v1/status` | Pressure, thresholds, critical and batch processes, auto-protect state, system CPU and memory, service details |
+| `GET /api/v1/processes` | Every running process with CPU %, memory, path, role, safety level and managed state |
+| `GET /api/v1/log?offset=N` | Log entries after byte offset `N`. `-1` returns the tail. The response includes the next `offset` and a `reset` flag after rotation. |
+| `POST /api/v1/command` | `{"command":"suspend","target":"<pid or exe>","confirm":false}`. Commands are `throttle`, `suspend`, `resume`, `release` and `exempt`. |
+| `POST /api/v1/role` | `{"name":"<exe>","role":"critical","confirm":false}`. Roles are `critical`, `batch`, `protected` and `none`. |
+| `POST /api/v1/logout` | Ends the session: the key stops working immediately |
+
+The unversioned paths from v2.0 (`/api/status` and so on) still work as aliases of v1. They answer with `Deprecation: true` and a `Link` header naming the v1 path, and will be removed in a future major version. Other version prefixes (such as `/api/v2/`) return 404.
+
+```powershell
+$key = "<the #token= part of the dashboard link>"
+Invoke-RestMethod http://127.0.0.1:8787/api/v1/status -Headers @{ 'X-ThreadHaul-Token' = $key }
+```
 
 Making a system process or service critical or batch, or throttling or suspending one, returns `{"ok":false,"needs_confirmation":true,...}` until the request is repeated with `"confirm":true`. Essential processes are always refused.
 
