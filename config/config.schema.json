@@ -133,6 +133,31 @@
         "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 8787 }
       }
     },
+    "actions": {
+      "type": "object",
+      "description": "What happens to a batch process at each stage. The defaults (Idle priority, then freeze) are the v2.0 behaviour.",
+      "properties": {
+        "throttle": {
+          "type": "object",
+          "properties": {
+            "priority": { "enum": ["idle", "below_normal"], "default": "idle" },
+            "io_priority": { "enum": ["unchanged", "low", "very_low"], "default": "unchanged", "description": "Lower the process's disk I/O priority too." },
+            "affinity_cores": { "type": "integer", "minimum": 0, "maximum": 64, "default": 0, "description": "Confine the process to this many of its highest-numbered logical cores. 0 = off." },
+            "cpu_rate_percent": { "type": "integer", "minimum": 0, "maximum": 100, "default": 0, "description": "Hard CPU cap as a percentage of the whole machine (Windows Job Object). 0 = off." }
+          },
+          "additionalProperties": false
+        },
+        "suspend": {
+          "type": "object",
+          "properties": {
+            "mode": { "enum": ["freeze", "cpu_rate"], "default": "freeze", "description": "freeze: suspend every thread. cpu_rate: keep the process running at a tiny CPU share, so sockets and timers survive." },
+            "cpu_rate_percent": { "type": "integer", "minimum": 1, "maximum": 100, "default": 1, "description": "For mode cpu_rate; must be below throttle.cpu_rate_percent when that is set." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "signals": {
       "type": "array",
       "description": "Extra pressure sources read from Windows performance counters. Each counts as 100% pressure at its limit; the highest signal wins. Applied only while a critical process is running.",

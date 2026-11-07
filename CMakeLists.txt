@@ -34,6 +34,7 @@ endif()
 # Core library: everything except the entry points.
 # --------------------------------------------------------------------------
 add_library(threadhaul_core STATIC
+    src/actuator/Actions.cpp
     src/actuator/ActuatorManager.cpp
     src/actuator/PriorityControl.cpp
     src/actuator/StateMachine.cpp

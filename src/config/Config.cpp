@@ -408,6 +408,37 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
         }
     }
 
+    if (const json* a = OptObject(root, "actions", "actions")) {
+        auto& ac = cfg.actions;
+        if (const json* t = OptObject(*a, "throttle", "actions.throttle")) {
+            ac.throttlePriority = OptString(*t, "priority", "actions.throttle.priority", "idle");
+            if (ac.throttlePriority != "idle" && ac.throttlePriority != "below_normal") {
+                throw ConfigError("actions.throttle.priority must be idle or below_normal");
+            }
+            ac.throttleIoPriority = OptString(*t, "io_priority", "actions.throttle.io_priority", "unchanged");
+            if (ac.throttleIoPriority != "unchanged" && ac.throttleIoPriority != "low" &&
+                ac.throttleIoPriority != "very_low") {
+                throw ConfigError("actions.throttle.io_priority must be unchanged, low or very_low");
+            }
+            ac.throttleAffinityCores =
+                OptInteger(*t, "affinity_cores", "actions.throttle.affinity_cores", 0, 64, 0);
+            ac.throttleCpuRatePercent =
+                OptInteger(*t, "cpu_rate_percent", "actions.throttle.cpu_rate_percent", 0, 100, 0);
+        }
+        if (const json* s = OptObject(*a, "suspend", "actions.suspend")) {
+            ac.suspendMode = OptString(*s, "mode", "actions.suspend.mode", "freeze");
+            if (ac.suspendMode != "freeze" && ac.suspendMode != "cpu_rate") {
+                throw ConfigError("actions.suspend.mode must be freeze or cpu_rate");
+            }
+            ac.suspendCpuRatePercent =
+                OptInteger(*s, "cpu_rate_percent", "actions.suspend.cpu_rate_percent", 1, 100, 1);
+        }
+        if (ac.suspendMode == "cpu_rate" && ac.throttleCpuRatePercent > 0 &&
+            ac.suspendCpuRatePercent >= ac.throttleCpuRatePercent) {
+            throw ConfigError("actions.suspend.cpu_rate_percent must be below actions.throttle.cpu_rate_percent");
+        }
+    }
+
     if (const json* m = OptObject(root, "metrics", "metrics")) {
         cfg.metricsEnabled = OptBool(*m, "enabled", "metrics.enabled", false);
         cfg.metricsToken = Secret(OptString(*m, "token", "metrics.token", ""), "metrics.token");

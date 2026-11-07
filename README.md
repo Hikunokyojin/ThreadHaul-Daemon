@@ -336,6 +336,7 @@ The service ignores the key. Rules that compare two fields (for example `low` < 
 | `dashboard.enabled` / `port` | Dashboard on `127.0.0.1` | `true`, 8787 (1024–65535) |
 | `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
 | `signals[]` | Extra pressure sources from performance counters (see below) | none |
+| `actions.throttle` / `actions.suspend` | What throttling and suspending do to a batch process (see below) | Idle priority; freeze |
 | `metrics.enabled` / `token` | Prometheus endpoint at `/metrics` on the dashboard port (see [Prometheus metrics](#prometheus-metrics)) | `false`, none |
 
 **Encrypted secrets.** `coordination.shared_token` and `alerts.webhook_url` may hold a `dpapi:...` value instead of plain text. Run `ThreadHaulDaemon.exe protect-secret`, type the secret (it isn't echoed), and paste the printed value into `config.json`. The value only decrypts on the machine that created it.
@@ -386,6 +387,31 @@ How signals are configured:
 
 Signals are data, not code: ThreadHaul never loads third-party DLLs, so adding a signal can't run anything inside the privileged service.
 
+**Actions.** By default, throttling sets a batch process to Idle priority and suspending freezes every thread. The `actions` section changes what each stage does:
+
+```json
+"actions": {
+  "throttle": { "priority": "below_normal", "io_priority": "very_low", "affinity_cores": 2, "cpu_rate_percent": 25 },
+  "suspend":  { "mode": "cpu_rate", "cpu_rate_percent": 2 }
+}
+```
+
+| Setting | Effect |
+|---|---|
+| `throttle.priority` | `idle` (default) or `below_normal` |
+| `throttle.io_priority` | `low` or `very_low`, so the job's disk access also yields to others. Default `unchanged`. |
+| `throttle.affinity_cores` | Confine the job to this many of its highest-numbered logical cores, leaving core 0 and the rest free. `0` = off. |
+| `throttle.cpu_rate_percent` | Hard CPU cap as a percentage of the *whole machine*, enforced by a Windows Job Object. `0` = off. |
+| `suspend.mode` | `freeze` (default) suspends every thread. `cpu_rate` keeps the process running at `suspend.cpu_rate_percent` of the machine, so its network connections and timers stay alive. |
+
+How actions are applied:
+- **Throttle options combine.** All the throttle options you set are applied together.
+- **Exact restore.** On recovery, ThreadHaul undoes exactly what it changed (the original affinity and I/O priority, and lifts the CPU cap), even if `actions` was edited in between.
+- **Failures.** If an action fails, for example because a process is already in a job that forbids nesting, the state change is logged with `actuation_succeeded: false`, and an `action_error` entry names the reason.
+- **Caveats.**
+  - Windows can't remove a process from a Job Object, so after recovery the process stays in an uncapped job until it exits.
+  - Affinity applies within the process's processor group.
+
 ## Logs and monitoring
 
 ### JSON Lines log
@@ -405,6 +431,7 @@ Every line of `C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl` is one JSO
 | `process_lifecycle` | A target appears, exits, crashes, restarts or is refused | `role`, `event`, `process_name/id`, `exit_code`, `previous_process_id` |
 | `config_reload` / `config_security` | The configuration changed, was rejected, or its permissions are too open | `success`, `error`, `config_sha256` |
 | `adaptive_threshold` | Predictive thresholds moved | `offset_percent`, `slope_percent_per_sample`, `forecast_percent` |
+| `action_error` | A throttle, suspend or restore action failed | `batch_process_id/name`, `to_state`, `error` |
 | `signal_sample` / `signal_error` | Each poll's performance-counter signal readings; a signal that can't be read (once per error) | `signals[]` with `signal`, `value`, `pressure_percent` / `signal`, `error` |
 | `identity_mismatch` | A process has a pinned name but the wrong path or publisher (once per process) | `process_name/id`, `image_path`, `publisher`, `reason` |
 | `manual_override` / `dashboard_action` | A command or role change from the CLI or dashboard | `command` / `role`, `result`, `confirmed_risk` |

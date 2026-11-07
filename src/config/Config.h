@@ -104,6 +104,16 @@ struct DaemonConfig {
     };
     std::vector<SignalConfig> signals;
 
+    // "actions": what throttle and suspend do to a batch process.
+    struct ActionsConfig {
+        std::string throttlePriority = "idle";   // idle | below_normal
+        std::string throttleIoPriority = "unchanged";  // unchanged | low | very_low
+        int throttleAffinityCores = 0;           // 0 = off
+        int throttleCpuRatePercent = 0;          // 0 = off (Job Object hard cap, % of the machine)
+        std::string suspendMode = "freeze";      // freeze | cpu_rate
+        int suspendCpuRatePercent = 1;           // for cpu_rate
+    } actions;
+
     // Prometheus endpoint at http://127.0.0.1:<dashboard port>/metrics.
     bool metricsEnabled = false;
     std::string metricsToken;  // if set, scrapes need "Authorization: Bearer <token>"

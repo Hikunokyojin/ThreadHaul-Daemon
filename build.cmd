@@ -23,7 +23,7 @@ set CFLAGS=/nologo /std:c++17 /EHsc /W3 /O2 /MT /utf-8 /DUNICODE /D_UNICODE /DWI
 set INC=/I"%SRC%\actuator" /I"%SRC%\config" /I"%SRC%\logging" /I"%SRC%\telemetry" /I"%SRC%\service" /I"%SRC%\common" /I"%THIRD%"
 set LIBS=advapi32.lib ws2_32.lib winhttp.lib wtsapi32.lib bcrypt.lib crypt32.lib wintrust.lib pdh.lib user32.lib shell32.lib
 
-set ACTUATOR="%SRC%\actuator\StateMachine.cpp" "%SRC%\actuator\ActuatorManager.cpp" "%SRC%\actuator\PriorityControl.cpp" "%SRC%\actuator\ThreadControl.cpp"
+set ACTUATOR="%SRC%\actuator\Actions.cpp" "%SRC%\actuator\StateMachine.cpp" "%SRC%\actuator\ActuatorManager.cpp" "%SRC%\actuator\PriorityControl.cpp" "%SRC%\actuator\ThreadControl.cpp"
 set TELEMETRY="%SRC%\telemetry\CpuMath.cpp" "%SRC%\telemetry\ProcessMonitor.cpp" "%SRC%\telemetry\ProcessIdentity.cpp" "%SRC%\telemetry\Signals.cpp" "%SRC%\telemetry\AdaptiveThresholds.cpp" "%SRC%\telemetry\ProcessTable.cpp" "%SRC%\telemetry\ProcessSafety.cpp"
 set CONFIGLOG="%SRC%\config\Config.cpp" "%SRC%\config\Secrets.cpp" "%SRC%\logging\JsonLinesLogger.cpp" "%SRC%\logging\LogChain.cpp" "%SRC%\logging\EventLogWriter.cpp"
 set SERVICE="%SRC%\service\Daemon.cpp" "%SRC%\service\Alerts.cpp" "%SRC%\service\ConfigSecurity.cpp" "%SRC%\service\ControlPipe.cpp" "%SRC%\service\Coordination.cpp" "%SRC%\service\HttpServer.cpp" "%SRC%\service\Dashboard.cpp" "%SRC%\service\AutoProtect.cpp" "%SRC%\service\SelfCheck.cpp" "%SRC%\service\Metrics.cpp" "%SRC%\common\SecureChannel.cpp"

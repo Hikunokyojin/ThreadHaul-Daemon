@@ -536,6 +536,33 @@ void ParsesMetricsSection() {
     ExpectRejected(__func__, cfg, "metrics.token");
 }
 
+void ParsesActionsSection() {
+    const auto d = config::ParseConfig(kValidConfig).actions;
+    Check(d.throttlePriority == "idle" && d.throttleIoPriority == "unchanged" && d.throttleAffinityCores == 0 &&
+              d.throttleCpuRatePercent == 0 && d.suspendMode == "freeze",
+          __func__, "defaults reproduce v2.0 behaviour");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["actions"] = {{"throttle", {{"priority", "below_normal"}, {"io_priority", "very_low"},
+                                    {"affinity_cores", 2}, {"cpu_rate_percent", 25}}},
+                      {"suspend", {{"mode", "cpu_rate"}, {"cpu_rate_percent", 3}}}};
+    const auto a = config::ParseConfig(cfg.dump()).actions;
+    Check(a.throttlePriority == "below_normal" && a.throttleIoPriority == "very_low" && a.throttleAffinityCores == 2 &&
+              a.throttleCpuRatePercent == 25 && a.suspendMode == "cpu_rate" && a.suspendCpuRatePercent == 3,
+          __func__, "all action fields");
+    auto with = [&](nlohmann::json act) {
+        nlohmann::json x = nlohmann::json::parse(kValidConfig);
+        x["actions"] = act;
+        return x;
+    };
+    ExpectRejected(__func__, with({{"throttle", {{"priority", "realtime"}}}}), "actions.throttle.priority");
+    ExpectRejected(__func__, with({{"throttle", {{"io_priority", "high"}}}}), "actions.throttle.io_priority");
+    ExpectRejected(__func__, with({{"throttle", {{"cpu_rate_percent", 150}}}}), "actions.throttle.cpu_rate_percent");
+    ExpectRejected(__func__, with({{"suspend", {{"mode", "kill"}}}}), "actions.suspend.mode");
+    ExpectRejected(__func__,
+                   with({{"throttle", {{"cpu_rate_percent", 5}}}, {"suspend", {{"mode", "cpu_rate"}, {"cpu_rate_percent", 10}}}}),
+                   "must be below actions.throttle.cpu_rate_percent");
+}
+
 void ParsesSignalsSection() {
     Check(config::ParseConfig(kValidConfig).signals.empty(), __func__, "no signals by default");
     nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
@@ -652,6 +679,7 @@ int main() {
     ParsesIdentitySection();
     ParsesMetricsSection();
     ParsesSignalsSection();
+    ParsesActionsSection();
     PrometheusTextFormat();
     std::error_code ec;
     fs::remove_all(dir, ec);

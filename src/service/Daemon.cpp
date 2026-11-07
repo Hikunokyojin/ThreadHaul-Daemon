@@ -52,6 +52,17 @@ actuator::StateMachineConfig ToStateMachineConfig(const config::DaemonConfig& c)
     s.escalateConsecutiveSamples = c.critical.consecutiveSamples;
     s.recoverThresholdPercent = c.low.percent;
     s.recoverConsecutiveSamples = c.low.consecutiveSamples;
+    auto& a = s.actions;
+    a.throttlePriority = c.actions.throttlePriority == "below_normal" ? actuator::PriorityLevel::BelowNormal
+                                                                     : actuator::PriorityLevel::Idle;
+    a.throttleIo = c.actions.throttleIoPriority == "very_low" ? actuator::IoPriority::VeryLow
+                   : c.actions.throttleIoPriority == "low"    ? actuator::IoPriority::Low
+                                                              : actuator::IoPriority::Unchanged;
+    a.throttleAffinityCores = c.actions.throttleAffinityCores;
+    a.throttleCpuRatePercent = c.actions.throttleCpuRatePercent;
+    a.suspendMode = c.actions.suspendMode == "cpu_rate" ? actuator::SuspendMode::CpuRate
+                                                        : actuator::SuspendMode::Freeze;
+    a.suspendCpuRatePercent = c.actions.suspendCpuRatePercent;
     return s;
 }
 
@@ -585,6 +596,15 @@ void Daemon::OnTransition(const std::wstring& name, DWORD pid, actuator::Process
     if (logger_) {
         logger_->LogActuatorAction(pid, name, criticalPid_, from, to, Round1(cpu), ok, trigger_);
     }
+    if (!ok) {
+        const actuator::ProcessStateMachine* m = actuator_ ? actuator_->Find(pid) : nullptr;
+        if (m && !m->LastActionError().empty()) {
+            Log("action_error", ordered_json{{"batch_process_id", pid},
+                                             {"batch_process_name", Narrow(name)},
+                                             {"to_state", logging::StateName(to)},
+                                             {"error", m->LastActionError()}});
+        }
+    }
     eventLog_.ReportActuatorAction(pid, name, criticalPid_, from, to, cpu, ok);
 
     ordered_json evt{{"log_type", "actuator_action"},
@@ -635,10 +655,12 @@ std::string Daemon::StatusJson() {
     j["critical"] = crit;
     ordered_json batch = ordered_json::array();
     actuator_->ForEach([&](const actuator::ProcessStateMachine& m) {
-        batch.push_back({{"name", Narrow(m.BatchProcessName())},
-                         {"pid", m.BatchProcessId()},
-                         {"state", logging::StateName(m.CurrentState())},
-                         {"manual_hold", m.IsManuallyHeld()}});
+        ordered_json b{{"name", Narrow(m.BatchProcessName())},
+                       {"pid", m.BatchProcessId()},
+                       {"state", logging::StateName(m.CurrentState())},
+                       {"manual_hold", m.IsManuallyHeld()}};
+        if (!m.LastActionError().empty()) b["action_error"] = m.LastActionError();
+        batch.push_back(b);
     });
     j["batch"] = batch;
     ordered_json sig = ordered_json::array();

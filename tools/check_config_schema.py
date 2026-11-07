@@ -54,6 +54,11 @@ expect(edited(lambda c: c.update(signals=[{"type": "gpu", "limit": 90}, {"type":
 expect(edited(lambda c: c.update(signals=[{"type": "counter", "limit": 1}])), False, "counter signal without name/counter")
 expect(edited(lambda c: c.update(signals=[{"type": "gpu", "limit": 1, "scale": 2}])), False, "scale on a built-in signal")
 expect(edited(lambda c: c.update(signals=[{"type": "gpu"}])), False, "signal without a limit")
+expect(edited(lambda c: c.update(actions={"throttle": {"priority": "below_normal", "io_priority": "very_low",
+                                                       "affinity_cores": 2, "cpu_rate_percent": 25},
+                                          "suspend": {"mode": "cpu_rate", "cpu_rate_percent": 2}})), True, "all actions")
+expect(edited(lambda c: c.update(actions={"throttle": {"priority": "realtime"}})), False, "realtime priority")
+expect(edited(lambda c: c.update(actions={"suspend": {"mode": "kill"}})), False, "unknown suspend mode")
 expect(edited(lambda c: c.update(metrics={"enabled": True, "token": "scrape-token-0123456789"})), True, "metrics with a token")
 expect(edited(lambda c: c.update(
     identity={"dispatch_api.exe": {"path": r"C:\Apps\d.exe", "publisher": "Contoso"},
