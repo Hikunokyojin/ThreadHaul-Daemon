@@ -170,6 +170,18 @@ std::string PrometheusText(const json& status, const MetricCounters& counters) {
         }
     }
 
+    const json schedules = status.value("schedules", json::array());
+    if (schedules.is_array() && !schedules.empty()) {
+        w.Family("threadhaul_schedule_active", "gauge",
+                 "1 for the schedule currently applied to each group (schedule=\"none\" outside every window).");
+        for (const json& s : schedules) {
+            w.Sample("threadhaul_schedule_active",
+                     Label("group", s.value("group", "")) + "," + Label("schedule", s.value("schedule", "")) + "," +
+                         Label("mode", s.value("mode", "")),
+                     1);
+        }
+    }
+
     const json signals = status.value("signals", json::array());
     if (signals.is_array() && !signals.empty()) {
         w.Family("threadhaul_signal_value", "gauge", "Current value of each configured performance-counter signal.");

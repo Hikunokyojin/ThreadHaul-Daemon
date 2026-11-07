@@ -86,6 +86,13 @@ size_t GroupIndex(const std::map<std::wstring, int>& groupOf, const std::wstring
     return g < count ? g : 0;
 }
 
+// A schedule in mode "off" sets thresholds out of reach; report those as
+// null ("no threshold") rather than a meaningless huge number.
+nlohmann::ordered_json ThresholdJson(double v) {
+    if (v >= 1e8) return nullptr;
+    return static_cast<long long>(v * 10 + (v >= 0 ? 0.5 : -0.5)) / 10.0;
+}
+
 const char* ThresholdTypeName(actuator::ThresholdType t) {
     switch (t) {
         case actuator::ThresholdType::High:     return "high";
@@ -247,6 +254,7 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
     actuator_->SetGroupConfigs(groupEffective_);
     if (trackers_.size() != groupBase_.size()) trackers_.assign(groupBase_.size(), telemetry::ThresholdTracker{});
     groupState_.resize(groupBase_.size());
+    UpdateSchedules(true);
     actuator_->SetProtectedProcessNames(cfg.protectedProcesses);
     {
         std::map<std::wstring, telemetry::ExpectedIdentity> pinned;
@@ -430,7 +438,58 @@ void Daemon::Run(HANDLE stopEvent) {
     }
 }
 
+void Daemon::UpdateSchedules(bool force) {
+    const size_t n = groupBase_.size();
+    if (activeSchedule_.size() != n) {
+        activeSchedule_.assign(n, -1);
+        force = true;
+    }
+    if (cfg_.schedules.empty() && !force) return;
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    const int minute = now.wHour * 60 + now.wMinute;
+    const std::vector<actuator::StateMachineConfig> plain = GroupPolicies(cfg_);
+    const double bias = coordination_ ? coordination_->ExternalBias() : 0.0;
+    bool changed = false;
+    for (size_t g = 0; g < n && g < plain.size(); ++g) {
+        const int idx = config::ActiveSchedule(cfg_, static_cast<int>(g), now.wDayOfWeek, minute);
+        if (!force && idx == activeSchedule_[g]) continue;
+        actuator::StateMachineConfig policy = plain[g];
+        if (idx >= 0) {
+            const auto& s = cfg_.schedules[idx];
+            policy = ToPolicy(s.high, s.critical_, s.low, s.actions);
+            if (s.off) {
+                // Never throttle; anything already throttled recovers after the
+                // usual number of samples, since pressure is always "below".
+                policy.throttleThresholdPercent = 1e9;
+                policy.escalateThresholdPercent = 1e9;
+                policy.recoverThresholdPercent = 1e9;
+            }
+        }
+        if (idx != activeSchedule_[g] || force) {
+            if (idx != activeSchedule_[g] && (!force || idx >= 0)) {
+                Log("schedule_change",
+                    ordered_json{{"group", g == 0 ? std::string("default") : cfg_.groups[g - 1].name},
+                                 {"schedule", idx >= 0 ? cfg_.schedules[idx].name : std::string("none")},
+                                 {"mode", idx >= 0 && cfg_.schedules[idx].off ? "off" : "normal"}});
+            }
+            activeSchedule_[g] = idx;
+            groupBase_[g] = policy;
+            if (g < groupEffective_.size()) groupEffective_[g] = adaptive_.Adjust(policy, bias);
+            if (g < trackers_.size()) trackers_[g].Reset();
+            changed = true;
+        }
+    }
+    if (changed && !groupBase_.empty()) {
+        base_ = groupBase_[0];
+        effective_ = groupEffective_[0];
+        actuator_->SetGroupConfigs(groupEffective_);
+    }
+}
+
 void Daemon::Poll() {
+    UpdateSchedules(false);
+
     // Pinned names that fail their identity check get no role this poll.
     std::vector<telemetry::IdentityFilter::Rejection> impostors;
     const std::vector<telemetry::ProcessEntry> snapshot =
@@ -749,9 +808,9 @@ std::string Daemon::StatusJson() {
     j["pressure_signal"] = pressureSignal_;
     j["critical_process_id"] = criticalPid_;
     j["offset_percent"] = Round1(base_.throttleThresholdPercent - effective_.throttleThresholdPercent);
-    j["thresholds"] = {{"high", Round1(effective_.throttleThresholdPercent)},
-                       {"critical", Round1(effective_.escalateThresholdPercent)},
-                       {"low", Round1(effective_.recoverThresholdPercent)}};
+    j["thresholds"] = {{"high", ThresholdJson(effective_.throttleThresholdPercent)},
+                       {"critical", ThresholdJson(effective_.escalateThresholdPercent)},
+                       {"low", ThresholdJson(effective_.recoverThresholdPercent)}};
     j["coordination_connected"] = coordination_ && coordination_->Connected();
     ordered_json crit = ordered_json::array();
     for (const telemetry::ProcessSample& s : lastSamples_) {
@@ -796,11 +855,21 @@ std::string Daemon::StatusJson() {
                               {"pressure_percent", Round1(st.pressure)},
                               {"pressure_signal", st.signal},
                               {"critical_process_id", st.criticalPid},
-                              {"thresholds", {{"high", Round1(eff.throttleThresholdPercent)},
-                                              {"critical", Round1(eff.escalateThresholdPercent)},
-                                              {"low", Round1(eff.recoverThresholdPercent)}}}});
+                              {"thresholds", {{"high", ThresholdJson(eff.throttleThresholdPercent)},
+                                              {"critical", ThresholdJson(eff.escalateThresholdPercent)},
+                                              {"low", ThresholdJson(eff.recoverThresholdPercent)}}}});
         }
         j["groups"] = groups;
+    }
+    if (!cfg_.schedules.empty()) {
+        ordered_json active = ordered_json::array();
+        for (size_t g = 0; g < activeSchedule_.size(); ++g) {
+            const int idx = activeSchedule_[g];
+            active.push_back({{"group", g == 0 ? std::string("default") : cfg_.groups[g - 1].name},
+                              {"schedule", idx >= 0 ? cfg_.schedules[idx].name : std::string("none")},
+                              {"mode", idx >= 0 && cfg_.schedules[idx].off ? "off" : "normal"}});
+        }
+        j["schedules"] = active;
     }
     return j.dump();
 }
@@ -905,9 +974,9 @@ std::string Daemon::DashboardStatus() {
     }
     j["service"] = svc;
 
-    j["base_thresholds"] = {{"high", base_.throttleThresholdPercent},
-                            {"critical", base_.escalateThresholdPercent},
-                            {"low", base_.recoverThresholdPercent},
+    j["base_thresholds"] = {{"high", ThresholdJson(base_.throttleThresholdPercent)},
+                            {"critical", ThresholdJson(base_.escalateThresholdPercent)},
+                            {"low", ThresholdJson(base_.recoverThresholdPercent)},
                             {"high_samples", base_.throttleConsecutiveSamples},
                             {"critical_samples", base_.escalateConsecutiveSamples},
                             {"low_samples", base_.recoverConsecutiveSamples}};

@@ -68,6 +68,18 @@ expect(edited(lambda c: c.update(groups=[{"name": "reports", "critical": ["sqlse
 expect(edited(lambda c: c.update(groups=[{"name": "default", "critical": ["a.exe"], "batch": ["b.exe"]}])), False,
        "group named default")
 expect(edited(lambda c: c.update(groups=[{"name": "g", "critical": [], "batch": ["b.exe"]}])), False, "group without critical")
+expect(edited(lambda c: c.update(schedules=[
+    {"name": "business", "days": ["mon", "fri"], "from": "08:00", "to": "18:00",
+     "thresholds": {"high": {"percent": 70, "consecutive_samples": 3}}},
+    {"name": "nightly", "days": ["mon"], "from": "22:00", "to": "06:00", "mode": "off"},
+    {"name": "allday", "days": ["sat"], "from": "00:00", "to": "24:00", "actions": {"suspend": {"mode": "cpu_rate"}}}])),
+    True, "schedules")
+expect(edited(lambda c: c.update(schedules=[{"name": "s", "days": ["mon"], "from": "08:00", "to": "09:00"}])), False,
+       "schedule that changes nothing")
+expect(edited(lambda c: c.update(schedules=[{"name": "s", "days": ["monday"], "from": "08:00", "to": "09:00",
+                                             "mode": "off"}])), False, "bad weekday")
+expect(edited(lambda c: c.update(schedules=[{"name": "s", "days": ["mon"], "from": "24:00", "to": "09:00",
+                                             "mode": "off"}])), False, "from 24:00")
 expect(edited(lambda c: c["processes"].update(protected=[{"name": "a.exe", "user": "x"}])), False, "rule in protected")
 expect(edited(lambda c: c.update(actions={"suspend": {"mode": "kill"}})), False, "unknown suspend mode")
 expect(edited(lambda c: c.update(metrics={"enabled": True, "token": "scrape-token-0123456789"})), True, "metrics with a token")

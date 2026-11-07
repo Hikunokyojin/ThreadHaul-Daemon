@@ -590,6 +590,93 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
         }
     }
 
+    if (const auto sched = root.find("schedules"); sched != root.end()) {
+        if (!sched->is_array()) throw ConfigError("schedules must be an array");
+        if (sched->size() > 32) throw ConfigError("schedules: at most 32 schedules");
+        auto clock = [](const std::string& s, const std::string& where, bool allow24) {
+            const bool shape = s.size() == 5 && isdigit(static_cast<unsigned char>(s[0])) &&
+                               isdigit(static_cast<unsigned char>(s[1])) && s[2] == ':' &&
+                               isdigit(static_cast<unsigned char>(s[3])) && isdigit(static_cast<unsigned char>(s[4]));
+            const int h = shape ? (s[0] - '0') * 10 + (s[1] - '0') : -1;
+            const int m = shape ? (s[3] - '0') * 10 + (s[4] - '0') : -1;
+            if (!shape || m > 59 || h > 24 || (h == 24 && (m != 0 || !allow24))) {
+                throw ConfigError(where + " must be a time HH:MM (00:00-23:59" + (allow24 ? ", or 24:00)" : ")"));
+            }
+            return h * 60 + m;
+        };
+        for (size_t i = 0; i < sched->size(); ++i) {
+            const std::string where = "schedules[" + std::to_string(i) + "]";
+            const json& s = (*sched)[i];
+            if (!s.is_object()) throw ConfigError(where + " must be an object");
+            DaemonConfig::ScheduleConfig sc;
+            sc.name = OptString(s, "name", where + ".name", "");
+            if (sc.name.empty() || sc.name.size() > 40 ||
+                sc.name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+                throw ConfigError(where + ".name must be 1-40 characters of a-z, 0-9 and _");
+            }
+            for (const auto& other : cfg.schedules) {
+                if (other.name == sc.name) throw ConfigError(where + ".name \"" + sc.name + "\" is used twice");
+            }
+            const std::string group = OptString(s, "group", where + ".group", "default");
+            if (group != "default") {
+                sc.group = -1;
+                for (size_t g = 0; g < cfg.groups.size(); ++g) {
+                    if (cfg.groups[g].name == group) sc.group = static_cast<int>(g) + 1;
+                }
+                if (sc.group < 0) throw ConfigError(where + ".group \"" + group + "\" is not a defined group");
+            }
+            const json& days = Field(s, "days", where + ".days");
+            static const char* kDays[] = {"sun", "mon", "tue", "wed", "thu", "fri", "sat"};
+            if (!days.is_array() || days.empty()) throw ConfigError(where + ".days must be a non-empty array such as [\"mon\",\"tue\"]");
+            for (const auto& d : days) {
+                bool known = false;
+                for (unsigned k = 0; k < 7; ++k) {
+                    if (d.is_string() && d.get<std::string>() == kDays[k]) {
+                        sc.daysMask |= 1u << k;
+                        known = true;
+                    }
+                }
+                if (!known) throw ConfigError(where + ".days: use sun, mon, tue, wed, thu, fri, sat");
+            }
+            sc.fromMinute = clock(OptString(s, "from", where + ".from", ""), where + ".from", false);
+            sc.toMinute = clock(OptString(s, "to", where + ".to", ""), where + ".to", true);
+            if (sc.fromMinute == sc.toMinute) {
+                throw ConfigError(where + ": from and to are the same; use 00:00 to 24:00 for a whole day");
+            }
+            const std::string mode = OptString(s, "mode", where + ".mode", "normal");
+            if (mode != "normal" && mode != "off") throw ConfigError(where + ".mode must be normal or off");
+            sc.off = mode == "off";
+
+            // Start from the group's policy, then apply this window's overrides.
+            const bool top = sc.group == 0;
+            const auto& gp = top ? DaemonConfig::GroupConfig{} : cfg.groups[sc.group - 1];
+            sc.high = top ? cfg.high : gp.high;
+            sc.critical_ = top ? cfg.critical : gp.critical_;
+            sc.low = top ? cfg.low : gp.low;
+            sc.actions = top ? cfg.actions : gp.actions;
+            if (const json* t = OptObject(s, "thresholds", where + ".thresholds")) {
+                if (sc.off) throw ConfigError(where + ": thresholds have no effect with mode \"off\"");
+                if (t->contains("high")) sc.high = Threshold(*t, "high", where + ".thresholds");
+                if (t->contains("critical")) sc.critical_ = Threshold(*t, "critical", where + ".thresholds");
+                if (t->contains("low")) sc.low = Threshold(*t, "low", where + ".thresholds");
+            }
+            if (sc.critical_.percent < sc.high.percent) {
+                throw ConfigError(where + ".thresholds: critical.percent must be at least high.percent");
+            }
+            if (sc.low.percent >= sc.high.percent) {
+                throw ConfigError(where + ".thresholds: low.percent must be below high.percent");
+            }
+            if (const json* a = OptObject(s, "actions", where + ".actions")) {
+                if (sc.off) throw ConfigError(where + ": actions have no effect with mode \"off\"");
+                ParseActions(*a, where + ".actions", sc.actions);
+            }
+            if (!sc.off && !s.contains("thresholds") && !s.contains("actions")) {
+                throw ConfigError(where + " changes nothing: give thresholds, actions or mode \"off\"");
+            }
+            cfg.schedules.push_back(std::move(sc));
+        }
+    }
+
     if (const json* m = OptObject(root, "metrics", "metrics")) {
         cfg.metricsEnabled = OptBool(*m, "enabled", "metrics.enabled", false);
         cfg.metricsToken = Secret(OptString(*m, "token", "metrics.token", ""), "metrics.token");
@@ -650,6 +737,26 @@ std::string SetProcessRole(const std::string& jsonText, const std::string& proce
     out += "\n";
     ParseConfig(out);  // throws ConfigError if the result is invalid
     return out;
+}
+
+int ActiveSchedule(const DaemonConfig& cfg, int group, int weekday, int minuteOfDay) {
+    const int yesterday = (weekday + 6) % 7;
+    for (size_t i = 0; i < cfg.schedules.size(); ++i) {
+        const auto& s = cfg.schedules[i];
+        if (s.group != group) continue;
+        const bool today = (s.daysMask >> weekday) & 1u;
+        bool on;
+        if (s.fromMinute < s.toMinute) {
+            on = today && minuteOfDay >= s.fromMinute && minuteOfDay < s.toMinute;
+        } else {
+            // Runs past midnight: the evening part today, or the morning part
+            // of a window that started yesterday.
+            on = (today && minuteOfDay >= s.fromMinute) ||
+                 (((s.daysMask >> yesterday) & 1u) && minuteOfDay < s.toMinute);
+        }
+        if (on) return static_cast<int>(i);
+    }
+    return -1;
 }
 
 DaemonConfig LoadConfigFile(const std::wstring& path) {

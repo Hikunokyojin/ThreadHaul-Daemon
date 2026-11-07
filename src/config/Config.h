@@ -141,6 +141,21 @@ struct DaemonConfig {
     std::map<std::wstring, int> criticalGroupOf;  // lower-case name -> policy index (absent = 0)
     std::map<std::wstring, int> batchGroupOf;
 
+    // "schedules": time windows that override one group's policy. The first
+    // schedule that matches the local time wins for its group.
+    struct ScheduleConfig {
+        std::string name;
+        int group = 0;                 // policy index (0 = default)
+        unsigned daysMask = 0;         // bit 0 = Sunday ... bit 6 = Saturday
+        int fromMinute = 0;            // 0..1439
+        int toMinute = 0;              // 1..1440; below fromMinute = runs past midnight
+        bool off = false;              // mode "off": never throttle during the window
+        // Effective policy for the window (the group's, with overrides applied).
+        ThresholdSpec high, critical_, low;
+        ActionsConfig actions;
+    };
+    std::vector<ScheduleConfig> schedules;
+
     // Prometheus endpoint at http://127.0.0.1:<dashboard port>/metrics.
     bool metricsEnabled = false;
     std::string metricsToken;  // if set, scrapes need "Authorization: Bearer <token>"
@@ -155,6 +170,11 @@ public:
 
 DaemonConfig ParseConfig(const std::string& jsonText);
 DaemonConfig LoadConfigFile(const std::wstring& path);
+
+// Index into cfg.schedules of the schedule active for `group` at a local
+// weekday (0 = Sunday) and minute of the day (0..1439), or -1 for none.
+// A window that runs past midnight belongs to the day it starts on.
+int ActiveSchedule(const DaemonConfig& cfg, int group, int weekday, int minuteOfDay);
 
 // Returns jsonText with `processName` moved to the given role: "critical",
 // "batch", "protected", or "none" (removed from all three lists). Names are

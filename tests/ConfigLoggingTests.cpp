@@ -536,6 +536,68 @@ void ParsesMetricsSection() {
     ExpectRejected(__func__, cfg, "metrics.token");
 }
 
+void SchedulesSelectByTime() {
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    const nlohmann::json weekdays = {"mon", "tue", "wed", "thu", "fri"};
+    cfg["groups"] = nlohmann::json::array({{{"name", "reports"}, {"critical", {"sqlservr.exe"}}, {"batch", {"etl.exe"}}}});
+    cfg["schedules"] = nlohmann::json::array({
+        {{"name", "business"}, {"days", weekdays}, {"from", "08:00"}, {"to", "18:00"},
+         {"thresholds", {{"high", {{"percent", 70}, {"consecutive_samples", 3}}}}}},
+        {{"name", "nightly"}, {"days", weekdays}, {"from", "22:00"}, {"to", "06:00"}, {"mode", "off"}},
+        {{"name", "lunch"}, {"days", weekdays}, {"from", "12:00"}, {"to", "13:00"}, {"mode", "off"}},
+        {{"name", "reports_weekend"}, {"group", "reports"}, {"days", {"sat", "sun"}}, {"from", "00:00"}, {"to", "24:00"},
+         {"actions", {{"suspend", {{"mode", "cpu_rate"}, {"cpu_rate_percent", 5}}}}}}});
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.schedules.size() == 4 && c.schedules[3].group == 1, __func__, "schedules parsed, group resolved");
+    Check(c.schedules[0].high.percent == 70 && c.schedules[0].critical_.percent == c.critical.percent,
+          __func__, "override applied on top of the group's policy");
+    Check(c.schedules[3].actions.suspendMode == "cpu_rate" && c.schedules[3].high.percent == c.high.percent,
+          __func__, "group schedule inherits the group's thresholds");
+    auto at = [&](int group, int day, const char* hhmm) {
+        const int m = ((hhmm[0] - '0') * 10 + (hhmm[1] - '0')) * 60 + (hhmm[3] - '0') * 10 + (hhmm[4] - '0');
+        const int i = config::ActiveSchedule(c, group, day, m);
+        return i < 0 ? std::string("none") : c.schedules[i].name;
+    };
+    // Weekdays: 0 = Sunday ... 6 = Saturday.
+    Check(at(0, 1, "09:30") == "business", __func__, "Monday morning: business hours");
+    Check(at(0, 1, "17:59") == "business" && at(0, 1, "18:00") == "none", __func__, "window end is exclusive");
+    Check(at(0, 3, "12:30") == "business", __func__, "first matching schedule wins (business before lunch)");
+    Check(at(0, 1, "23:15") == "nightly" && at(0, 2, "05:59") == "nightly", __func__, "overnight window spans midnight");
+    Check(at(0, 6, "05:00") == "nightly", __func__, "Friday night's window runs into Saturday morning");
+    Check(at(0, 1, "05:00") == "none", __func__, "Monday early morning: Sunday is not a listed day");
+    Check(at(0, 6, "10:00") == "none", __func__, "weekend daytime: no default-group schedule");
+    Check(at(1, 0, "00:00") == "reports_weekend" && at(1, 6, "23:59") == "reports_weekend", __func__,
+          "00:00-24:00 covers the whole day");
+    Check(at(1, 1, "09:30") == "none", __func__, "schedules only apply to their own group");
+    Check(c.schedules[1].off, __func__, "mode off parsed");
+
+    auto with = [&](nlohmann::json s) {
+        nlohmann::json x = cfg;
+        x["schedules"] = nlohmann::json::array({s});
+        return x;
+    };
+    const nlohmann::json base = {{"name", "s"}, {"days", {"mon"}}, {"from", "08:00"}, {"to", "09:00"}, {"mode", "off"}};
+    auto edit = [&](const char* key, nlohmann::json v) { nlohmann::json s = base; s[key] = v; return with(s); };
+    ExpectRejected(__func__, edit("from", "8:00"), "schedules[0].from must be a time HH:MM");
+    ExpectRejected(__func__, edit("from", "24:00"), "schedules[0].from must be a time");
+    ExpectRejected(__func__, edit("to", "25:00"), "schedules[0].to must be a time");
+    ExpectRejected(__func__, edit("to", "08:00"), "from and to are the same");
+    ExpectRejected(__func__, edit("days", {"monday"}), "schedules[0].days");
+    ExpectRejected(__func__, edit("days", nlohmann::json::array()), "schedules[0].days");
+    ExpectRejected(__func__, edit("group", "nope"), "is not a defined group");
+    ExpectRejected(__func__, edit("mode", "pause"), "schedules[0].mode");
+    nlohmann::json noop = base;
+    noop.erase("mode");
+    ExpectRejected(__func__, with(noop), "changes nothing");
+    nlohmann::json offWithThresholds = base;
+    offWithThresholds["thresholds"] = {{"high", {{"percent", 70}, {"consecutive_samples", 3}}}};
+    ExpectRejected(__func__, with(offWithThresholds), "no effect with mode \"off\"");
+    nlohmann::json badLevels = base;
+    badLevels.erase("mode");
+    badLevels["thresholds"] = {{"low", {{"percent", 95}, {"consecutive_samples", 3}}}};
+    ExpectRejected(__func__, with(badLevels), "low.percent must be below high.percent");
+}
+
 void ParsesGroups() {
     Check(config::ParseConfig(kValidConfig).groups.empty(), __func__, "no groups by default");
     nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
@@ -786,6 +848,7 @@ int main() {
     ParsesActionsSection();
     ParsesMatchRules();
     ParsesGroups();
+    SchedulesSelectByTime();
     PrometheusTextFormat();
     std::error_code ec;
     fs::remove_all(dir, ec);

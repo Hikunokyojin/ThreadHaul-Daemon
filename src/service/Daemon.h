@@ -81,6 +81,9 @@ private:
     void Poll();
     void DiscoverBatchProcesses(const std::vector<telemetry::ProcessEntry>& snapshot);
     void LogSelf();
+    // Applies the schedule active now to each group's policy. `force` rebuilds
+    // every group (config load); otherwise only groups whose schedule changed.
+    void UpdateSchedules(bool force);
     std::string StatusJson();
     void Log(const char* type, const nlohmann::ordered_json& fields);
     void OnTransition(const std::wstring& name, DWORD pid, actuator::ProcessState from,
@@ -114,6 +117,7 @@ private:
         bool active = false;   // had a valid critical sample on the last poll
     };
     std::vector<GroupState> groupState_;
+    std::vector<int> activeSchedule_;   // per group: index into cfg_.schedules, -1 = none
     telemetry::AdaptiveThresholds adaptive_;
     telemetry::SelfMonitor self_;
     unsigned cores_ = 1;

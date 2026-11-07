@@ -223,10 +223,15 @@
       ? `${s.pressure_signal}${crit ? " · " + crit.name : ""}`
       : "no critical process running";
     const card = $("card-pressure");
-    card.classList.toggle("alert-bad", p >= th.critical);
-    card.classList.toggle("alert-warn", p >= th.high && p < th.critical);
+    // null thresholds = a schedule in mode "off" is active: never throttling.
+    const off = typeof th.high !== "number";
+    card.classList.toggle("alert-bad", !off && p >= th.critical);
+    card.classList.toggle("alert-warn", !off && p >= th.high && p < th.critical);
 
-    $("kpi-thresholds").textContent = `${fmt1(th.high)} / ${fmt1(th.critical)} / ${fmt1(th.low)}`;
+    const sched = (s.schedules || []).find((x) => x.group === "default");
+    $("kpi-thresholds").textContent = off
+      ? `off (schedule${sched ? " " + sched.schedule : ""})`
+      : `${fmt1(th.high)} / ${fmt1(th.critical)} / ${fmt1(th.low)}`;
     $("kpi-thresholds-sub").textContent = s.offset_percent > 0
       ? `lowered ${fmt1(s.offset_percent)} pts (predictive${s.coordination_connected ? " / cluster" : ""})`
       : `samples: ${base.high_samples ?? 3} / ${base.critical_samples ?? 5} / ${base.low_samples ?? 5}`;

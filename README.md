@@ -338,6 +338,7 @@ The service ignores the key. Rules that compare two fields (for example `low` < 
 | `signals[]` | Extra pressure sources from performance counters (see below) | none |
 | `actions.throttle` / `actions.suspend` | What throttling and suspending do to a batch process (see below) | Idle priority; freeze |
 | `groups[]` | Extra independent policies, each with its own critical and batch processes, thresholds and actions (see below) | none |
+| `schedules[]` | Time windows that change a group's thresholds or actions, or turn throttling off (see below) | none |
 | `metrics.enabled` / `token` | Prometheus endpoint at `/metrics` on the dashboard port (see [Prometheus metrics](#prometheus-metrics)) | `false`, none |
 
 **Encrypted secrets.** `coordination.shared_token` and `alerts.webhook_url` may hold a `dpapi:...` value instead of plain text. Run `ThreadHaulDaemon.exe protect-secret`, type the secret (it isn't echoed), and paste the printed value into `config.json`. The value only decrypts on the machine that created it.
@@ -433,6 +434,26 @@ How groups are set up:
 - **Shared signals.** Machine-wide signals (`signals`, the system-memory trigger) feed every group whose critical process is running. Adaptive thresholds and the controller bias shift every group alike.
 - **Visibility.** `/api/v1/status` lists each group's pressure and thresholds, along with every managed batch process's group. Log entries carry a `group` field, and Prometheus gets `threadhaul_group_*` metrics.
 
+**Schedules.** Change the rules by time of day and day of week, in the server's local time:
+
+```json
+"schedules": [
+  { "name": "business_hours", "days": ["mon","tue","wed","thu","fri"], "from": "08:00", "to": "18:00",
+    "thresholds": { "high": { "percent": 70, "consecutive_samples": 3 } } },
+  { "name": "nightly_batch", "days": ["mon","tue","wed","thu","fri"], "from": "22:00", "to": "06:00",
+    "mode": "off" },
+  { "name": "reports_weekend", "group": "reports", "days": ["sat","sun"], "from": "00:00", "to": "24:00",
+    "actions": { "suspend": { "mode": "cpu_rate", "cpu_rate_percent": 5 } } }
+]
+```
+
+How schedules work:
+- **Scope.** A schedule applies to one group: `default` (the top-level policy) unless `group` names one.
+- **What it changes.** During its window it overrides `thresholds` and/or `actions`; anything left out comes from the group. `mode: "off"` stops throttling for the window, and processes that are already throttled recover normally.
+- **Time windows.** `from` is inclusive and `to` is exclusive, and `24:00` means the end of the day. When `to` is earlier than `from`, the window runs past midnight and belongs to the day it starts on: Friday's 22:00–06:00 runs until Saturday 06:00.
+- **First match wins.** For each group, the first matching schedule in the list applies. Outside every window the group's normal policy applies.
+- **Visibility.** Every change is logged as `schedule_change`. The active schedule appears in `/api/v1/status` and as `threadhaul_schedule_active`, and the dashboard shows "off" while throttling is paused.
+
 **Actions.** By default, throttling sets a batch process to Idle priority and suspending freezes every thread. The `actions` section changes what each stage does:
 
 ```json
@@ -478,6 +499,7 @@ Every line of `C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl` is one JSO
 | `config_reload` / `config_security` | The configuration changed, was rejected, or its permissions are too open | `success`, `error`, `config_sha256` |
 | `adaptive_threshold` | Predictive thresholds moved | `offset_percent`, `slope_percent_per_sample`, `forecast_percent` |
 | `action_error` | A throttle, suspend or restore action failed | `batch_process_id/name`, `to_state`, `error` |
+| `schedule_change` | A group's active schedule changed | `group`, `schedule` (`none` outside every window), `mode` |
 | `signal_sample` / `signal_error` | Each poll's performance-counter signal readings; a signal that can't be read (once per error) | `signals[]` with `signal`, `value`, `pressure_percent` / `signal`, `error` |
 | `identity_mismatch` | A process has a pinned name but the wrong path or publisher (once per process) | `process_name/id`, `image_path`, `publisher`, `reason` |
 | `manual_override` / `dashboard_action` | A command or role change from the CLI or dashboard | `command` / `role`, `result`, `confirmed_risk` |
@@ -518,6 +540,7 @@ scrape_configs:
 | `threadhaul_batch_process_state{name,pid,state,manual_hold}` | gauge | 1 per managed batch process, in its current state |
 | `threadhaul_actions_total{action,trigger}` | counter | State changes since start (`priority_lowered`, `threads_suspended`, `recovered`) by trigger |
 | `threadhaul_log_events_total{log_type}` | counter | Log entries written since start, by type |
+| `threadhaul_schedule_active{group,schedule,mode}` | gauge | 1 for each group's current schedule (only with `schedules`); thresholds are omitted while a schedule is `off` |
 | `threadhaul_group_pressure_percent{group}`, `_threshold_percent{group,level}`, `_active{group}` | gauge | Each policy group's pressure, effective thresholds, and whether its critical processes were sampled (only with `groups`) |
 | `threadhaul_signal_value{signal}`, `_pressure_percent{signal}`, `_up{signal}` | gauge | Each configured signal's reading, its share of the limit, and whether it could be read |
 | `threadhaul_auto_protect_enabled`, `_level{level}`, `_processes` | gauge | Auto-protect on/off, current level, programs lowered |
