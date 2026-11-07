@@ -102,7 +102,18 @@ private:
     std::unique_ptr<CoordinationClient> coordination_;
 
     std::map<std::wstring, std::unique_ptr<telemetry::TrackedProcess>> critical_;
-    telemetry::ThresholdTracker tracker_;
+    // Policy groups: index 0 is the top-level ("default") policy, then one
+    // per entry in config "groups". base_/effective_ mirror group 0.
+    std::vector<telemetry::ThresholdTracker> trackers_;
+    std::vector<actuator::StateMachineConfig> groupBase_;
+    std::vector<actuator::StateMachineConfig> groupEffective_;
+    struct GroupState {
+        double pressure = 0.0;
+        std::string signal = "cpu";
+        DWORD criticalPid = 0;
+        bool active = false;   // had a valid critical sample on the last poll
+    };
+    std::vector<GroupState> groupState_;
     telemetry::AdaptiveThresholds adaptive_;
     telemetry::SelfMonitor self_;
     unsigned cores_ = 1;

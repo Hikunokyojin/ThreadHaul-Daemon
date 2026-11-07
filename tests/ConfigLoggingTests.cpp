@@ -536,6 +536,59 @@ void ParsesMetricsSection() {
     ExpectRejected(__func__, cfg, "metrics.token");
 }
 
+void ParsesGroups() {
+    Check(config::ParseConfig(kValidConfig).groups.empty(), __func__, "no groups by default");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["actions"] = {{"throttle", {{"priority", "below_normal"}}}};
+    cfg["groups"] = nlohmann::json::array({
+        {{"name", "reports"}, {"critical", {"sqlservr.exe"}}, {"batch", {"report_builder.exe", "etl.exe"}},
+         {"thresholds", {{"high", {{"percent", 95}, {"consecutive_samples", 5}}},
+                         {"critical", {{"percent", 97}, {"consecutive_samples", 5}}}}},
+         {"actions", {{"suspend", {{"mode", "cpu_rate"}, {"cpu_rate_percent", 2}}}}}},
+        {{"name", "web"}, {"critical", {{{"name", "java.exe"}, {"command_line_contains", "api.jar"}}}},
+         {"batch", {{{"name", "java.exe"}, {"command_line_contains", "crawl.jar"}}}}}});
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.groups.size() == 2 && c.groups[0].name == "reports", __func__, "two groups");
+    const auto& r = c.groups[0];
+    Check(r.high.percent == 95 && r.high.consecutiveSamples == 5 && r.critical_.percent == 97 &&
+              r.low.percent == c.low.percent,
+          __func__, "partial threshold override inherits the rest");
+    nlohmann::json bad = cfg;
+    bad["groups"][0]["thresholds"].erase("critical");
+    ExpectRejected(__func__, bad, "critical.percent must be at least high.percent");
+    Check(r.actions.throttlePriority == "below_normal" && r.actions.suspendMode == "cpu_rate", __func__,
+          "actions override layers on top-level actions");
+    Check(c.groups[1].actions.suspendMode == "freeze", __func__, "group without actions inherits top-level");
+    Check(c.criticalGroupOf.at(L"sqlservr.exe") == 1 && c.batchGroupOf.at(L"etl.exe") == 1 &&
+              c.criticalGroupOf.at(L"java.exe") == 2 && c.batchGroupOf.at(L"java.exe") == 2,
+          __func__, "names map to their group");
+    Check(!c.criticalGroupOf.count(L"dispatch_api.exe"), __func__, "top-level names are group 0");
+    bool merged = false;
+    for (const auto& n : c.batchProcesses) merged = merged || n == L"report_builder.exe";
+    Check(merged && c.batchRules.count(L"java.exe"), __func__, "group names and rules merged into the role lists");
+
+    auto with = [&](nlohmann::json groups) {
+        nlohmann::json x = nlohmann::json::parse(kValidConfig);
+        x["groups"] = groups;
+        return x;
+    };
+    const nlohmann::json ok = {{"name", "g"}, {"critical", {"x.exe"}}, {"batch", {"y.exe"}}};
+    ExpectRejected(__func__, with({{{"name", "default"}, {"critical", {"x.exe"}}, {"batch", {"y.exe"}}}}), "not \"default\"");
+    ExpectRejected(__func__, with({ok, ok}), "used twice");
+    ExpectRejected(__func__, with({{{"name", "g"}, {"critical", nlohmann::json::array()}, {"batch", {"y.exe"}}}}),
+                   "at least one critical and one batch");
+    ExpectRejected(__func__, with({{{"name", "g"}, {"critical", {"dispatch_api.exe"}}, {"batch", {"y.exe"}}}}),
+                   "already used by group \"default\"");
+    ExpectRejected(__func__, with({ok, {{"name", "h"}, {"critical", {"z.exe"}}, {"batch", {"Y.EXE"}}}}),
+                   "already used by group \"g\"");
+    ExpectRejected(__func__, with({{{"name", "g"}, {"critical", {"x.exe"}}, {"batch", {"y.exe"}},
+                                    {"thresholds", {{"low", {{"percent", 99}, {"consecutive_samples", 1}}}}}}}),
+                   "low.percent must be below high.percent");
+    ExpectRejected(__func__, with({{{"name", "g"}, {"critical", {"x.exe"}}, {"batch", {"y.exe"}},
+                                    {"actions", {{"suspend", {{"mode", "kill"}}}}}}}),
+                   "groups[0].actions.suspend.mode");
+}
+
 void ParsesMatchRules() {
     nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
     cfg["processes"]["critical"] = {"dispatch_api.exe",
@@ -651,6 +704,8 @@ void PrometheusTextFormat() {
         "service": {"uptime_seconds": 120, "working_set_mb": 2},
         "system": {"cpu_percent": 71.3, "memory_load_percent": 40, "memory_used_gb": 1, "memory_total_gb": 16, "logical_cores": 8},
         "auto_protect": {"enabled": true, "level": "throttling", "processes": [{"pid": 1}]},
+        "groups": [{"name": "default", "active": true, "pressure_percent": 92.5, "thresholds": {"high": 85, "critical": 90, "low": 60}},
+                   {"name": "reports", "active": false, "pressure_percent": 0, "thresholds": {"high": 95, "critical": 97, "low": 60}}],
         "signals": [{"name": "gpu", "ok": true, "value": 45, "pressure_percent": 50},
                     {"name": "broken", "ok": false, "error": "counter not found"}]
     })");
@@ -682,6 +737,10 @@ void PrometheusTextFormat() {
               has("threadhaul_signal_up{signal=\"broken\"} 0\n") &&
               !has("threadhaul_signal_value{signal=\"broken\"}"),
           t, "signal metrics; broken signal only reports up=0");
+    Check(has("threadhaul_group_pressure_percent{group=\"default\"} 92.5\n") &&
+              has("threadhaul_group_threshold_percent{group=\"reports\",level=\"high\"} 95\n") &&
+              has("threadhaul_group_active{group=\"reports\"} 0\n"),
+          t, "group metrics");
     Check(text.back() == '\n' && !has("\r"), t, "LF line endings, ends with newline");
     Check(daemon::PrometheusLabel("a\\b\nc") == "a\\\\b\\nc", t, "backslash and newline escaped");
 
@@ -726,6 +785,7 @@ int main() {
     ParsesSignalsSection();
     ParsesActionsSection();
     ParsesMatchRules();
+    ParsesGroups();
     PrometheusTextFormat();
     std::error_code ec;
     fs::remove_all(dir, ec);

@@ -144,6 +144,32 @@ std::string PrometheusText(const json& status, const MetricCounters& counters) {
         }
     }
 
+    const json groups = status.value("groups", json::array());
+    if (groups.is_array() && !groups.empty()) {
+        w.Family("threadhaul_group_pressure_percent", "gauge", "Pressure of each policy group's critical processes.");
+        for (const json& g : groups) {
+            double v;
+            if (Num(g, "pressure_percent", v)) {
+                w.Sample("threadhaul_group_pressure_percent", Label("group", g.value("name", "")), v);
+            }
+        }
+        w.Family("threadhaul_group_threshold_percent", "gauge", "Effective thresholds of each policy group.");
+        for (const json& g : groups) {
+            const json th = g.value("thresholds", json::object());
+            for (const char* level : {"high", "critical", "low"}) {
+                double v;
+                if (Num(th, level, v)) {
+                    w.Sample("threadhaul_group_threshold_percent",
+                             Label("group", g.value("name", "")) + "," + Label("level", level), v);
+                }
+            }
+        }
+        w.Family("threadhaul_group_active", "gauge", "1 when the group's critical processes had a valid sample on the last poll.");
+        for (const json& g : groups) {
+            w.Sample("threadhaul_group_active", Label("group", g.value("name", "")), g.value("active", false) ? 1 : 0);
+        }
+    }
+
     const json signals = status.value("signals", json::array());
     if (signals.is_array() && !signals.empty()) {
         w.Family("threadhaul_signal_value", "gauge", "Current value of each configured performance-counter signal.");

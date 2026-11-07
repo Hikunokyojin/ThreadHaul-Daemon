@@ -133,6 +133,32 @@
         "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 8787 }
       }
     },
+    "groups": {
+      "type": "array",
+      "maxItems": 16,
+      "description": "Extra independent policies. Each group's batch processes respond only to its own critical processes' pressure, with its own thresholds and actions (inherited from the top level when omitted). A program may belong to only one group; the top-level processes form the \"default\" group.",
+      "items": {
+        "type": "object",
+        "required": ["name", "critical", "batch"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9_]{1,40}$", "not": { "const": "default" } },
+          "critical": { "$ref": "#/$defs/roleList", "minItems": 1 },
+          "batch": { "$ref": "#/$defs/roleList", "minItems": 1 },
+          "thresholds": {
+            "type": "object",
+            "description": "Overrides; levels left out use the top-level thresholds. Must still satisfy low < high <= critical.",
+            "properties": {
+              "high": { "$ref": "#/$defs/threshold" },
+              "critical": { "$ref": "#/$defs/threshold" },
+              "low": { "$ref": "#/$defs/threshold" }
+            },
+            "additionalProperties": false
+          },
+          "actions": { "$ref": "#/properties/actions" }
+        },
+        "additionalProperties": false
+      }
+    },
     "actions": {
       "type": "object",
       "description": "What happens to a batch process at each stage. The defaults (Idle priority, then freeze) are the v2.0 behaviour.",

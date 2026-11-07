@@ -26,10 +26,10 @@ bool NamesEqualIgnoreCase(const std::wstring& a, const wchar_t* b) {
 
 ActuatorManager::ActuatorManager(StateMachineConfig config,
                                   TransitionCallback onTransition)
-    : config_(config)
+    : groupConfigs_{config}
     , onTransition_(std::move(onTransition)) {}
 
-bool ActuatorManager::AddBatchProcess(const std::wstring& processName, DWORD processId) {
+bool ActuatorManager::AddBatchProcess(const std::wstring& processName, DWORD processId, int group) {
     if (IsProtected(processName, processId)) {
         return false;
     }
@@ -37,8 +37,41 @@ bool ActuatorManager::AddBatchProcess(const std::wstring& processName, DWORD pro
         return true;
     }
     machines_[processId] = std::make_unique<ProcessStateMachine>(
-        processName, processId, config_, onTransition_);
+        processName, processId, GroupConfig(group), onTransition_);
+    group_[processId] = group;
     return true;
+}
+
+void ActuatorManager::SetGroupConfigs(const std::vector<StateMachineConfig>& configs) {
+    if (configs.empty()) return;
+    groupConfigs_ = configs;
+    for (auto& [pid, machine] : machines_) {
+        machine->SetConfig(GroupConfig(GroupOf(pid)));
+    }
+}
+
+int ActuatorManager::GroupOf(DWORD processId) const {
+    const auto it = group_.find(processId);
+    return it == group_.end() ? 0 : it->second;
+}
+
+std::vector<bool> ActuatorManager::UpdateGroups(const std::vector<double>& pressure,
+                                                const std::vector<bool>& active) {
+    std::vector<bool> changed(std::max<size_t>(pressure.size(), 1), false);
+    for (auto it = machines_.begin(); it != machines_.end();) {
+        if (it->second->HasExited()) {
+            group_.erase(it->first);
+            it = machines_.erase(it);
+            continue;
+        }
+        size_t g = static_cast<size_t>(GroupOf(it->first));
+        if (g >= pressure.size()) g = 0;
+        if (g < pressure.size() && (g >= active.size() || active[g])) {
+            if (it->second->Update(pressure[g])) changed[g] = true;
+        }
+        ++it;
+    }
+    return changed;
 }
 
 void ActuatorManager::SetProtectedProcessNames(std::vector<std::wstring> names) {
@@ -76,6 +109,7 @@ std::vector<std::wstring> ActuatorManager::AlwaysProtectedNames() {
 
 void ActuatorManager::RemoveBatchProcess(DWORD processId) {
     machines_.erase(processId);
+    group_.erase(processId);
 }
 
 void ActuatorManager::OnThresholdEvent(const ThresholdEvent& evt) {
@@ -105,9 +139,11 @@ void ActuatorManager::ForceRecoverAllForShutdown() {
 }
 
 void ActuatorManager::SetConfig(const StateMachineConfig& config) {
-    config_ = config;
+    groupConfigs_[0] = config;
     for (auto& [pid, machine] : machines_) {
-        machine->SetConfig(config);
+        if (GroupOf(pid) == 0 || static_cast<size_t>(GroupOf(pid)) >= groupConfigs_.size()) {
+            machine->SetConfig(config);
+        }
     }
 }
 

@@ -499,8 +499,9 @@ void SignalSetReadsRealCounters() {
     const auto r = set.Sample();
     Check(r.size() == 4, __func__, "one reading per signal");
     if (r.size() != 4) return;
-    Check(r[0].ok && r[0].value >= 0 && r[0].value <= 100 && r[0].percent == r[0].value, __func__,
-          "processor time read: " + r[0].error);
+    // Uncapped processor time can read a hair over 100; percent = 100*v/100 may differ in the last bit.
+    Check(r[0].ok && r[0].value >= 0 && r[0].value <= 101 && std::fabs(r[0].percent - r[0].value) < 1e-9, __func__,
+          "processor time read: " + r[0].error + " value=" + std::to_string(r[0].value));
     Check(r[1].ok && r[1].value > 0 && std::fabs(r[1].percent - 100.0 * r[1].value / 1024) < 1e-9, __func__,
           "available memory read and scaled to percent: " + r[1].error);
     Check(r[2].ok && r[2].value >= 0, __func__, "network built-in reads (sum of interfaces): " + r[2].error);

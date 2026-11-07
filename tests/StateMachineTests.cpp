@@ -346,6 +346,45 @@ void ActionsOnRealProcess() {
     CloseHandle(pi.hProcess);
 }
 
+void GroupsHaveIndependentPolicies() {
+    StateMachineConfig tight;            // group 0: throttle at 85
+    StateMachineConfig loose;            // group 1: throttle only at 98
+    loose.throttleThresholdPercent = 98;
+    loose.escalateThresholdPercent = 99;
+    loose.recoverThresholdPercent = 50;
+    ActuatorManager mgr(tight);
+    mgr.SetGroupConfigs({tight, loose});
+    mgr.AddBatchProcess(L"a.exe", kFakePid, 0);
+    mgr.AddBatchProcess(L"b.exe", kFakePid + 1, 1);
+    mgr.AddBatchProcess(L"c.exe", kFakePid + 2, 7);  // unknown group -> default policy
+    Check(mgr.GroupOf(kFakePid + 1) == 1 && mgr.GroupOf(kFakePid + 2) == 7, __func__, "group recorded");
+    Check(mgr.Find(kFakePid + 1)->Config().throttleThresholdPercent == 98, __func__, "group policy applied");
+    Check(mgr.Find(kFakePid + 2)->Config().throttleThresholdPercent == 85, __func__, "unknown group uses default policy");
+
+    // Same 90% pressure in both groups: only the tight group throttles.
+    for (int i = 0; i < 3; ++i) mgr.UpdateGroups({90, 90}, {true, true});
+    Check(mgr.Find(kFakePid)->CurrentState() == ProcessState::Throttled, __func__, "group 0 throttles at 90");
+    Check(mgr.Find(kFakePid + 1)->CurrentState() == ProcessState::Normal, __func__, "group 1 ignores 90");
+
+    // Group 1's own pressure, not group 0's, drives it.
+    for (int i = 0; i < 3; ++i) mgr.UpdateGroups({10, 99}, {true, true});
+    Check(mgr.Find(kFakePid + 1)->CurrentState() == ProcessState::Throttled, __func__, "group 1 throttles on its pressure");
+
+    // Inactive group: its machines are not updated (no recovery on a missing sample).
+    for (int i = 0; i < 10; ++i) mgr.UpdateGroups({10, 0}, {true, false});
+    Check(mgr.Find(kFakePid + 1)->CurrentState() == ProcessState::Throttled, __func__, "inactive group untouched");
+    Check(mgr.Find(kFakePid)->CurrentState() == ProcessState::Normal, __func__, "active group recovers");
+
+    StateMachineConfig looser = loose;
+    looser.throttleThresholdPercent = 97;
+    mgr.SetGroupConfigs({tight, looser});
+    Check(mgr.Find(kFakePid + 1)->Config().throttleThresholdPercent == 97, __func__, "SetGroupConfigs re-applies");
+    mgr.SetConfig(loose);
+    Check(mgr.Find(kFakePid)->Config().throttleThresholdPercent == 98 &&
+              mgr.Find(kFakePid + 1)->Config().throttleThresholdPercent == 97,
+          __func__, "SetConfig changes only the default group");
+}
+
 void ActionErrorsAreReported() {
     StateMachineConfig cfg;
     cfg.actions.throttleCpuRatePercent = 10;
@@ -380,6 +419,7 @@ int main() {
     HighestCoresMask();
     ActionsOnRealProcess();
     ActionErrorsAreReported();
+    GroupsHaveIndependentPolicies();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

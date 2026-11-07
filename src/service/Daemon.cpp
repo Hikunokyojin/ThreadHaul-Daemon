@@ -44,26 +44,55 @@ bool Contains(const std::vector<std::wstring>& names, const std::wstring& name) 
                        [&](const std::wstring& n) { return SameName(n, name); });
 }
 
-actuator::StateMachineConfig ToStateMachineConfig(const config::DaemonConfig& c) {
+actuator::StateMachineConfig ToPolicy(const config::ThresholdSpec& high, const config::ThresholdSpec& critical,
+                                      const config::ThresholdSpec& low,
+                                      const config::DaemonConfig::ActionsConfig& ca) {
     actuator::StateMachineConfig s;
-    s.throttleThresholdPercent = c.high.percent;
-    s.throttleConsecutiveSamples = c.high.consecutiveSamples;
-    s.escalateThresholdPercent = c.critical.percent;
-    s.escalateConsecutiveSamples = c.critical.consecutiveSamples;
-    s.recoverThresholdPercent = c.low.percent;
-    s.recoverConsecutiveSamples = c.low.consecutiveSamples;
+    s.throttleThresholdPercent = high.percent;
+    s.throttleConsecutiveSamples = high.consecutiveSamples;
+    s.escalateThresholdPercent = critical.percent;
+    s.escalateConsecutiveSamples = critical.consecutiveSamples;
+    s.recoverThresholdPercent = low.percent;
+    s.recoverConsecutiveSamples = low.consecutiveSamples;
     auto& a = s.actions;
-    a.throttlePriority = c.actions.throttlePriority == "below_normal" ? actuator::PriorityLevel::BelowNormal
-                                                                     : actuator::PriorityLevel::Idle;
-    a.throttleIo = c.actions.throttleIoPriority == "very_low" ? actuator::IoPriority::VeryLow
-                   : c.actions.throttleIoPriority == "low"    ? actuator::IoPriority::Low
-                                                              : actuator::IoPriority::Unchanged;
-    a.throttleAffinityCores = c.actions.throttleAffinityCores;
-    a.throttleCpuRatePercent = c.actions.throttleCpuRatePercent;
-    a.suspendMode = c.actions.suspendMode == "cpu_rate" ? actuator::SuspendMode::CpuRate
-                                                        : actuator::SuspendMode::Freeze;
-    a.suspendCpuRatePercent = c.actions.suspendCpuRatePercent;
+    a.throttlePriority = ca.throttlePriority == "below_normal" ? actuator::PriorityLevel::BelowNormal
+                                                              : actuator::PriorityLevel::Idle;
+    a.throttleIo = ca.throttleIoPriority == "very_low" ? actuator::IoPriority::VeryLow
+                   : ca.throttleIoPriority == "low"    ? actuator::IoPriority::Low
+                                                       : actuator::IoPriority::Unchanged;
+    a.throttleAffinityCores = ca.throttleAffinityCores;
+    a.throttleCpuRatePercent = ca.throttleCpuRatePercent;
+    a.suspendMode = ca.suspendMode == "cpu_rate" ? actuator::SuspendMode::CpuRate
+                                                 : actuator::SuspendMode::Freeze;
+    a.suspendCpuRatePercent = ca.suspendCpuRatePercent;
     return s;
+}
+
+// Policy per group: index 0 = top level, then one per config group.
+std::vector<actuator::StateMachineConfig> GroupPolicies(const config::DaemonConfig& c) {
+    std::vector<actuator::StateMachineConfig> out{ToPolicy(c.high, c.critical, c.low, c.actions)};
+    for (const auto& g : c.groups) out.push_back(ToPolicy(g.high, g.critical_, g.low, g.actions));
+    return out;
+}
+
+std::wstring LowerName(std::wstring s) {
+    for (wchar_t& ch : s) ch = static_cast<wchar_t>(towlower(ch));
+    return s;
+}
+
+size_t GroupIndex(const std::map<std::wstring, int>& groupOf, const std::wstring& name, size_t count) {
+    const auto it = groupOf.find(LowerName(name));
+    const size_t g = it == groupOf.end() ? 0 : static_cast<size_t>(it->second);
+    return g < count ? g : 0;
+}
+
+const char* ThresholdTypeName(actuator::ThresholdType t) {
+    switch (t) {
+        case actuator::ThresholdType::High:     return "high";
+        case actuator::ThresholdType::Critical: return "critical";
+        case actuator::ThresholdType::Low:      return "low";
+    }
+    return "unknown";
 }
 
 telemetry::AdaptiveSettings ToAdaptive(const config::DaemonConfig& c) {
@@ -208,10 +237,16 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
             cfg.maxRotatedFiles);
     }
 
-    base_ = ToStateMachineConfig(cfg);
     adaptive_.SetSettings(ToAdaptive(cfg));
-    effective_ = adaptive_.Adjust(base_, coordination_ ? coordination_->ExternalBias() : 0.0);
-    actuator_->SetConfig(effective_);
+    groupBase_ = GroupPolicies(cfg);
+    groupEffective_.clear();
+    const double bias0 = coordination_ ? coordination_->ExternalBias() : 0.0;
+    for (const auto& b : groupBase_) groupEffective_.push_back(adaptive_.Adjust(b, bias0));
+    base_ = groupBase_[0];
+    effective_ = groupEffective_[0];
+    actuator_->SetGroupConfigs(groupEffective_);
+    if (trackers_.size() != groupBase_.size()) trackers_.assign(groupBase_.size(), telemetry::ThresholdTracker{});
+    groupState_.resize(groupBase_.size());
     actuator_->SetProtectedProcessNames(cfg.protectedProcesses);
     {
         std::map<std::wstring, telemetry::ExpectedIdentity> pinned;
@@ -437,15 +472,21 @@ void Daemon::Poll() {
         Log("process_lifecycle", f);
     }
 
-    // Combine every critical instance's signals into one pressure value.
+    // Each policy group combines its own critical instances' signals into one
+    // pressure value (group 0 is the top-level policy).
+    const size_t groupCount = std::max<size_t>(groupBase_.size(), 1);
+    std::vector<double> gPressure(groupCount, 0.0);
+    std::vector<std::string> gSignal(groupCount, "cpu");
+    std::vector<DWORD> gPid(groupCount, 0);
+    std::vector<bool> gHasSamples(groupCount, false), gValid(groupCount, false);
     const double memLoad =
         cfg_.memoryTriggerEnabled ? telemetry::SystemMemoryLoadPercent() : 0.0;
-    double pressure = 0.0;
-    std::string signal = "cpu";
-    DWORD pid = 0;
     bool anyValid = false;
     for (const telemetry::ProcessSample& s : samples) {
+        const size_t g = GroupIndex(cfg_.criticalGroupOf, s.name, groupCount);
+        gHasSamples[g] = true;
         if (!s.valid) continue;
+        gValid[g] = true;
         anyValid = true;
         double p = s.cpuPercent;
         std::string sig = "cpu";
@@ -462,18 +503,20 @@ void Daemon::Poll() {
             if (io > p) { p = io; sig = "io"; }
         }
         if (cfg_.logSamples) {
-            Log("sample", ordered_json{{"process_id", s.pid},
-                                       {"cpu_percent", Round1(s.cpuPercent)},
-                                       {"process_name", Narrow(s.name)},
-                                       {"memory_mb", Round1(s.workingSetMb)},
-                                       {"io_mb_per_sec", Round1(s.ioMbPerSec)},
-                                       {"pressure_percent", Round1(p)},
-                                       {"trigger_signal", sig}});
+            ordered_json f{{"process_id", s.pid},
+                           {"cpu_percent", Round1(s.cpuPercent)},
+                           {"process_name", Narrow(s.name)},
+                           {"memory_mb", Round1(s.workingSetMb)},
+                           {"io_mb_per_sec", Round1(s.ioMbPerSec)},
+                           {"pressure_percent", Round1(p)},
+                           {"trigger_signal", sig}};
+            if (!cfg_.groups.empty()) f["group"] = g == 0 ? std::string("default") : cfg_.groups[g - 1].name;
+            Log("sample", f);
         }
-        if (p >= pressure) {
-            pressure = p;
-            signal = sig;
-            pid = s.pid;
+        if (p >= gPressure[g]) {
+            gPressure[g] = p;
+            gSignal[g] = sig;
+            gPid[g] = s.pid;
         }
     }
     lastSamples_ = samples;
@@ -491,9 +534,11 @@ void Daemon::Poll() {
                 continue;
             }
             logged.push_back({{"signal", r.name}, {"value", Round1(r.value)}, {"pressure_percent", Round1(r.percent)}});
-            if (anyValid && r.percent > pressure) {
-                pressure = r.percent;
-                signal = r.name;
+            for (size_t g = 0; g < groupCount; ++g) {  // machine-wide: feeds every running group
+                if (gValid[g] && r.percent > gPressure[g]) {
+                    gPressure[g] = r.percent;
+                    gSignal[g] = r.name;
+                }
             }
         }
         if (cfg_.logSamples && anyValid && !logged.empty()) {
@@ -504,20 +549,41 @@ void Daemon::Poll() {
     DiscoverBatchProcesses(batchSnapshot);
 
     // A critical instance that was only just (re)acquired has no CPU delta
-    // yet; skip the state machines for that one poll rather than feed 0%.
-    if (!samples.empty() && !anyValid) {
+    // yet; skip that group's state machines for one poll rather than feed 0%.
+    // A group whose critical processes are not running has pressure 0 (its
+    // batch processes recover), as before.
+    std::vector<bool> active(groupCount);
+    bool anyActive = false;
+    for (size_t g = 0; g < groupCount; ++g) {
+        active[g] = !(gHasSamples[g] && !gValid[g]);
+        anyActive = anyActive || active[g];
+    }
+    if (!anyActive) {
         return;
     }
-    pressure_ = pressure;
-    pressureSignal_ = signal;
-    criticalPid_ = pid;
+    size_t top = 0;
+    for (size_t g = 0; g < groupCount; ++g) {
+        if (active[g] && (!active[top] || gPressure[g] > gPressure[top])) top = g;
+    }
+    pressure_ = gPressure[top];
+    pressureSignal_ = gSignal[top];
+    criticalPid_ = gPid[top];
+    for (size_t g = 0; g < groupCount && g < groupState_.size(); ++g) {
+        groupState_[g].active = active[g];
+        if (active[g]) groupState_[g] = {gPressure[g], gSignal[g], gPid[g], true};
+    }
+    const double pressure = pressure_;
 
     adaptive_.AddSample(pressure);
     const double bias = coordination_ ? coordination_->ExternalBias() : 0.0;
     const actuator::StateMachineConfig eff = adaptive_.Adjust(base_, bias);
     if (std::abs(eff.throttleThresholdPercent - effective_.throttleThresholdPercent) >= 0.5) {
+        // The adaptive offset and controller bias apply to every group alike.
+        for (size_t g = 0; g < groupBase_.size() && g < groupEffective_.size(); ++g) {
+            groupEffective_[g] = adaptive_.Adjust(groupBase_[g], bias);
+        }
         effective_ = eff;
-        actuator_->SetConfig(effective_);
+        actuator_->SetGroupConfigs(groupEffective_);
         Log("adaptive_threshold",
             ordered_json{{"offset_percent", Round1(base_.throttleThresholdPercent - eff.throttleThresholdPercent)},
                          {"slope_percent_per_sample", Round1(adaptive_.Slope())},
@@ -528,13 +594,25 @@ void Daemon::Poll() {
                          {"low_percent", Round1(eff.recoverThresholdPercent)}});
     }
 
-    for (const auto& fired : tracker_.Add(pressure, effective_)) {
-        {
-            std::lock_guard<std::mutex> lock(countersMutex_);
-            counters_.logEvents["threshold_event"]++;
-        }
-        if (logger_) {
-            logger_->LogThresholdEvent(pid, fired.type, fired.consecutiveSamples, Round1(pressure));
+    for (size_t g = 0; g < groupCount && g < trackers_.size() && g < groupEffective_.size(); ++g) {
+        if (!active[g]) continue;
+        for (const auto& fired : trackers_[g].Add(gPressure[g], groupEffective_[g])) {
+            {
+                std::lock_guard<std::mutex> lock(countersMutex_);
+                counters_.logEvents["threshold_event"]++;
+            }
+            if (g == 0 && cfg_.groups.empty()) {
+                if (logger_) {
+                    logger_->LogThresholdEvent(gPid[g], fired.type, fired.consecutiveSamples, Round1(gPressure[g]));
+                }
+            } else if (logger_) {
+                logger_->LogEvent("threshold_event",
+                                  ordered_json{{"process_id", gPid[g]},
+                                               {"threshold", ThresholdTypeName(fired.type)},
+                                               {"consecutive_samples", fired.consecutiveSamples},
+                                               {"cpu_percent", Round1(gPressure[g])},
+                                               {"group", g == 0 ? std::string("default") : cfg_.groups[g - 1].name}});
+            }
         }
     }
 
@@ -548,8 +626,9 @@ void Daemon::Poll() {
                                                   {"state", logging::StateName(m.CurrentState())}});
         }
     });
-    if (actuator_->UpdateAll(pressure)) {
-        tracker_.Reset();
+    const std::vector<bool> changed = actuator_->UpdateGroups(gPressure, active);
+    for (size_t g = 0; g < changed.size() && g < trackers_.size(); ++g) {
+        if (changed[g]) trackers_[g].Reset();
     }
     for (auto it = adhoc_.begin(); it != adhoc_.end();) {
         it = actuator_->Find(*it) == nullptr ? adhoc_.erase(it) : std::next(it);
@@ -573,7 +652,8 @@ void Daemon::DiscoverBatchProcesses(const std::vector<telemetry::ProcessEntry>& 
     for (const std::wstring& name : cfg_.batchProcesses) {
         for (DWORD pid : telemetry::FindByName(snapshot, name)) {
             if (actuator_->Find(pid) != nullptr) continue;
-            if (actuator_->AddBatchProcess(name, pid)) {
+            const int group = static_cast<int>(GroupIndex(cfg_.batchGroupOf, name, groupBase_.size()));
+            if (actuator_->AddBatchProcess(name, pid, group)) {
                 Log("process_lifecycle", ordered_json{{"role", "batch"},
                                                       {"event", "acquired"},
                                                       {"process_name", Narrow(name)},
@@ -685,6 +765,11 @@ std::string Daemon::StatusJson() {
                        {"state", logging::StateName(m.CurrentState())},
                        {"manual_hold", m.IsManuallyHeld()}};
         if (!m.LastActionError().empty()) b["action_error"] = m.LastActionError();
+        if (!cfg_.groups.empty()) {
+            const int g = actuator_->GroupOf(m.BatchProcessId());
+            b["group"] = g <= 0 || static_cast<size_t>(g) > cfg_.groups.size() ? std::string("default")
+                                                                               : cfg_.groups[g - 1].name;
+        }
         batch.push_back(b);
     });
     j["batch"] = batch;
@@ -701,6 +786,22 @@ std::string Daemon::StatusJson() {
         sig.push_back(e);
     }
     j["signals"] = sig;
+    if (!cfg_.groups.empty()) {
+        ordered_json groups = ordered_json::array();
+        for (size_t g = 0; g < groupEffective_.size() && g < groupState_.size(); ++g) {
+            const auto& st = groupState_[g];
+            const auto& eff = groupEffective_[g];
+            groups.push_back({{"name", g == 0 ? std::string("default") : cfg_.groups[g - 1].name},
+                              {"active", st.active},
+                              {"pressure_percent", Round1(st.pressure)},
+                              {"pressure_signal", st.signal},
+                              {"critical_process_id", st.criticalPid},
+                              {"thresholds", {{"high", Round1(eff.throttleThresholdPercent)},
+                                              {"critical", Round1(eff.escalateThresholdPercent)},
+                                              {"low", Round1(eff.recoverThresholdPercent)}}}});
+        }
+        j["groups"] = groups;
+    }
     return j.dump();
 }
 
@@ -1103,7 +1204,8 @@ std::string Daemon::HandleCommand(const std::string& line) {
             outcome = "refused: configured as a critical process";
         } else if (verb == "throttle" || verb == "suspend") {
             if (m == nullptr) {
-                if (!actuator_->AddBatchProcess(e.name, e.pid)) {
+                if (!actuator_->AddBatchProcess(
+                        e.name, e.pid, static_cast<int>(GroupIndex(cfg_.batchGroupOf, e.name, groupBase_.size())))) {
                     ok = false;
                     outcome = "refused: process is on the protection list";
                 } else {

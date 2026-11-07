@@ -62,6 +62,12 @@ expect(edited(lambda c: c["processes"].update(
     critical=["a.exe", {"name": "java.exe", "command_line_contains": "api.jar"}],
     batch=[{"name": "java.exe", "user": "svc"}, {"name": "svchost.exe", "service": "wuauserv"}])), True, "match rules")
 expect(edited(lambda c: c["processes"].update(batch=[{"name": "java.exe"}])), False, "rule without a condition")
+expect(edited(lambda c: c.update(groups=[{"name": "reports", "critical": ["sqlservr.exe"], "batch": ["etl.exe"],
+                                          "thresholds": {"high": {"percent": 95, "consecutive_samples": 5}},
+                                          "actions": {"suspend": {"mode": "cpu_rate"}}}])), True, "a group")
+expect(edited(lambda c: c.update(groups=[{"name": "default", "critical": ["a.exe"], "batch": ["b.exe"]}])), False,
+       "group named default")
+expect(edited(lambda c: c.update(groups=[{"name": "g", "critical": [], "batch": ["b.exe"]}])), False, "group without critical")
 expect(edited(lambda c: c["processes"].update(protected=[{"name": "a.exe", "user": "x"}])), False, "rule in protected")
 expect(edited(lambda c: c.update(actions={"suspend": {"mode": "kill"}})), False, "unknown suspend mode")
 expect(edited(lambda c: c.update(metrics={"enabled": True, "token": "scrape-token-0123456789"})), True, "metrics with a token")

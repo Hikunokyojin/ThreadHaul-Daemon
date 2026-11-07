@@ -127,6 +127,20 @@ struct DaemonConfig {
         int suspendCpuRatePercent = 1;           // for cpu_rate
     } actions;
 
+    // "groups": extra independent policies. Group i in this list is policy
+    // index i + 1; index 0 is the top-level ("default") policy. Their process
+    // names are also merged into criticalProcesses/batchProcesses (and rules).
+    struct GroupConfig {
+        std::string name;
+        std::vector<std::wstring> critical;
+        std::vector<std::wstring> batch;
+        ThresholdSpec high, critical_, low;   // critical_ = the "critical" threshold
+        ActionsConfig actions;
+    };
+    std::vector<GroupConfig> groups;
+    std::map<std::wstring, int> criticalGroupOf;  // lower-case name -> policy index (absent = 0)
+    std::map<std::wstring, int> batchGroupOf;
+
     // Prometheus endpoint at http://127.0.0.1:<dashboard port>/metrics.
     bool metricsEnabled = false;
     std::string metricsToken;  // if set, scrapes need "Authorization: Bearer <token>"

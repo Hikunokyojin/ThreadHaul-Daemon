@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 namespace config {
@@ -159,8 +160,8 @@ std::vector<std::wstring> NameList(const json& v, const std::string& path,
     return names;
 }
 
-ThresholdSpec Threshold(const json& thresholds, const char* key) {
-    const std::string path = std::string("thresholds.") + key;
+ThresholdSpec Threshold(const json& thresholds, const char* key, const std::string& prefix = "thresholds") {
+    const std::string path = prefix + "." + key;
     const json& t = Object(thresholds, key, path);
     ThresholdSpec spec;
     spec.percent = Percent(t, "percent", path + ".percent");
@@ -236,6 +237,38 @@ const json* OptObject(const json& obj, const char* key, const std::string& path)
 
 bool SameName(const std::wstring& a, const std::wstring& b) {
     return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+}
+
+// "actions" (top level or inside a group): p is the path prefix for errors.
+// Fields that are absent keep the value already in `ac`.
+void ParseActions(const json& a, const std::string& p, DaemonConfig::ActionsConfig& ac) {
+    if (const json* t = OptObject(a, "throttle", p + ".throttle")) {
+        ac.throttlePriority = OptString(*t, "priority", p + ".throttle.priority", ac.throttlePriority);
+        if (ac.throttlePriority != "idle" && ac.throttlePriority != "below_normal") {
+            throw ConfigError(p + ".throttle.priority must be idle or below_normal");
+        }
+        ac.throttleIoPriority = OptString(*t, "io_priority", p + ".throttle.io_priority", ac.throttleIoPriority);
+        if (ac.throttleIoPriority != "unchanged" && ac.throttleIoPriority != "low" &&
+            ac.throttleIoPriority != "very_low") {
+            throw ConfigError(p + ".throttle.io_priority must be unchanged, low or very_low");
+        }
+        ac.throttleAffinityCores =
+            OptInteger(*t, "affinity_cores", p + ".throttle.affinity_cores", 0, 64, ac.throttleAffinityCores);
+        ac.throttleCpuRatePercent =
+            OptInteger(*t, "cpu_rate_percent", p + ".throttle.cpu_rate_percent", 0, 100, ac.throttleCpuRatePercent);
+    }
+    if (const json* s = OptObject(a, "suspend", p + ".suspend")) {
+        ac.suspendMode = OptString(*s, "mode", p + ".suspend.mode", ac.suspendMode);
+        if (ac.suspendMode != "freeze" && ac.suspendMode != "cpu_rate") {
+            throw ConfigError(p + ".suspend.mode must be freeze or cpu_rate");
+        }
+        ac.suspendCpuRatePercent =
+            OptInteger(*s, "cpu_rate_percent", p + ".suspend.cpu_rate_percent", 1, 100, ac.suspendCpuRatePercent);
+    }
+    if (ac.suspendMode == "cpu_rate" && ac.throttleCpuRatePercent > 0 &&
+        ac.suspendCpuRatePercent >= ac.throttleCpuRatePercent) {
+        throw ConfigError(p + ".suspend.cpu_rate_percent must be below " + p + ".throttle.cpu_rate_percent");
+    }
 }
 
 }
@@ -468,33 +501,92 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
     }
 
     if (const json* a = OptObject(root, "actions", "actions")) {
-        auto& ac = cfg.actions;
-        if (const json* t = OptObject(*a, "throttle", "actions.throttle")) {
-            ac.throttlePriority = OptString(*t, "priority", "actions.throttle.priority", "idle");
-            if (ac.throttlePriority != "idle" && ac.throttlePriority != "below_normal") {
-                throw ConfigError("actions.throttle.priority must be idle or below_normal");
+        ParseActions(*a, "actions", cfg.actions);
+    }
+
+    // Groups: independent policies, each with its own critical and batch
+    // programs, and optionally its own thresholds and actions (otherwise the
+    // top-level ones). Their names are merged into the role lists so matching
+    // and discovery work as before; criticalGroupOf/batchGroupOf say which
+    // policy a name follows (0 = the top-level "default" group).
+    if (const auto groups = root.find("groups"); groups != root.end()) {
+        if (!groups->is_array()) throw ConfigError("groups must be an array");
+        if (groups->size() > 16) throw ConfigError("groups: at most 16 groups");
+        std::map<std::wstring, std::string> owner;  // lower-case name -> group that uses it
+        for (const auto& n : cfg.criticalProcesses) owner[LowerW(n)] = "default";
+        for (const auto& n : cfg.batchProcesses) owner[LowerW(n)] = "default";
+        for (size_t i = 0; i < groups->size(); ++i) {
+            const std::string where = "groups[" + std::to_string(i) + "]";
+            const json& g = (*groups)[i];
+            if (!g.is_object()) throw ConfigError(where + " must be an object");
+            DaemonConfig::GroupConfig gc;
+            gc.name = OptString(g, "name", where + ".name", "");
+            if (gc.name.empty() || gc.name.size() > 40 || gc.name == "default" ||
+                gc.name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+                throw ConfigError(where + ".name must be 1-40 characters of a-z, 0-9 and _ (not \"default\")");
             }
-            ac.throttleIoPriority = OptString(*t, "io_priority", "actions.throttle.io_priority", "unchanged");
-            if (ac.throttleIoPriority != "unchanged" && ac.throttleIoPriority != "low" &&
-                ac.throttleIoPriority != "very_low") {
-                throw ConfigError("actions.throttle.io_priority must be unchanged, low or very_low");
+            for (const auto& other : cfg.groups) {
+                if (other.name == gc.name) throw ConfigError(where + ".name \"" + gc.name + "\" is used twice");
             }
-            ac.throttleAffinityCores =
-                OptInteger(*t, "affinity_cores", "actions.throttle.affinity_cores", 0, 64, 0);
-            ac.throttleCpuRatePercent =
-                OptInteger(*t, "cpu_rate_percent", "actions.throttle.cpu_rate_percent", 0, 100, 0);
-        }
-        if (const json* s = OptObject(*a, "suspend", "actions.suspend")) {
-            ac.suspendMode = OptString(*s, "mode", "actions.suspend.mode", "freeze");
-            if (ac.suspendMode != "freeze" && ac.suspendMode != "cpu_rate") {
-                throw ConfigError("actions.suspend.mode must be freeze or cpu_rate");
+            std::map<std::wstring, std::vector<DaemonConfig::MatchRule>> critRules, batchRules;
+            gc.critical = NameList(Field(g, "critical", where + ".critical"), where + ".critical", &critRules);
+            gc.batch = NameList(Field(g, "batch", where + ".batch"), where + ".batch", &batchRules);
+            if (gc.critical.empty() || gc.batch.empty()) {
+                throw ConfigError(where + " needs at least one critical and one batch process");
             }
-            ac.suspendCpuRatePercent =
-                OptInteger(*s, "cpu_rate_percent", "actions.suspend.cpu_rate_percent", 1, 100, 1);
-        }
-        if (ac.suspendMode == "cpu_rate" && ac.throttleCpuRatePercent > 0 &&
-            ac.suspendCpuRatePercent >= ac.throttleCpuRatePercent) {
-            throw ConfigError("actions.suspend.cpu_rate_percent must be below actions.throttle.cpu_rate_percent");
+            for (const auto& c : gc.critical) {
+                for (const auto& b : gc.batch) {
+                    if (SameName(c, b) && (!critRules.count(LowerW(c)) || !batchRules.count(LowerW(c)))) {
+                        throw ConfigError(where + ": \"" + WideToUtf8(c) +
+                                          "\" is in both critical and batch; that is only allowed when both entries have match conditions");
+                    }
+                }
+            }
+            std::set<std::wstring> mine;
+            for (const auto* list : {&gc.critical, &gc.batch}) {
+                for (const auto& n : *list) {
+                    const std::wstring key = LowerW(n);
+                    const auto it = owner.find(key);
+                    if (it != owner.end() && it->second != gc.name) {
+                        throw ConfigError(where + ": \"" + WideToUtf8(n) + "\" is already used by group \"" +
+                                          it->second + "\"; a program can follow only one policy");
+                    }
+                    mine.insert(key);
+                }
+            }
+            for (const auto& k : mine) owner[k] = gc.name;
+
+            gc.high = cfg.high;
+            gc.critical_ = cfg.critical;
+            gc.low = cfg.low;
+            if (const json* t = OptObject(g, "thresholds", where + ".thresholds")) {
+                if (t->contains("high")) gc.high = Threshold(*t, "high", where + ".thresholds");
+                if (t->contains("critical")) gc.critical_ = Threshold(*t, "critical", where + ".thresholds");
+                if (t->contains("low")) gc.low = Threshold(*t, "low", where + ".thresholds");
+            }
+            if (gc.critical_.percent < gc.high.percent) {
+                throw ConfigError(where + ".thresholds: critical.percent must be at least high.percent");
+            }
+            if (gc.low.percent >= gc.high.percent) {
+                throw ConfigError(where + ".thresholds: low.percent must be below high.percent");
+            }
+            gc.actions = cfg.actions;
+            if (const json* a = OptObject(g, "actions", where + ".actions")) {
+                ParseActions(*a, where + ".actions", gc.actions);
+            }
+
+            const int index = static_cast<int>(cfg.groups.size()) + 1;
+            for (const auto& n : gc.critical) {
+                cfg.criticalProcesses.push_back(n);
+                cfg.criticalGroupOf[LowerW(n)] = index;
+            }
+            for (const auto& n : gc.batch) {
+                cfg.batchProcesses.push_back(n);
+                cfg.batchGroupOf[LowerW(n)] = index;
+            }
+            for (auto& [k, v] : critRules) cfg.criticalRules[k] = std::move(v);
+            for (auto& [k, v] : batchRules) cfg.batchRules[k] = std::move(v);
+            cfg.groups.push_back(std::move(gc));
         }
     }
 

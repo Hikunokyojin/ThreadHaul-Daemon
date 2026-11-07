@@ -337,6 +337,7 @@ The service ignores the key. Rules that compare two fields (for example `low` < 
 | `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
 | `signals[]` | Extra pressure sources from performance counters (see below) | none |
 | `actions.throttle` / `actions.suspend` | What throttling and suspending do to a batch process (see below) | Idle priority; freeze |
+| `groups[]` | Extra independent policies, each with its own critical and batch processes, thresholds and actions (see below) | none |
 | `metrics.enabled` / `token` | Prometheus endpoint at `/metrics` on the dashboard port (see [Prometheus metrics](#prometheus-metrics)) | `false`, none |
 
 **Encrypted secrets.** `coordination.shared_token` and `alerts.webhook_url` may hold a `dpapi:...` value instead of plain text. Run `ThreadHaulDaemon.exe protect-secret`, type the secret (it isn't echoed), and paste the printed value into `config.json`. The value only decrypts on the machine that created it.
@@ -411,6 +412,26 @@ How signals are configured:
 - **Logging and metrics.** With `telemetry.log_samples`, each poll's readings are logged as `signal_sample`. They also appear in `/api/v1/status` and as `threadhaul_signal_*` metrics.
 
 Signals are data, not code: ThreadHaul never loads third-party DLLs, so adding a signal can't run anything inside the privileged service.
+
+**Policy groups.** The top-level `processes`, `thresholds` and `actions` form one policy, the `default` group. Add `groups` when a machine runs several workloads that need different rules. Each group's batch processes respond only to *its own* critical processes, using its own thresholds and actions.
+
+```json
+"groups": [
+  { "name": "reports",
+    "critical": [ "sqlservr.exe" ],
+    "batch":    [ "report_builder.exe", "etl.exe" ],
+    "thresholds": { "high": { "percent": 95, "consecutive_samples": 5 },
+                    "critical": { "percent": 98, "consecutive_samples": 10 } },
+    "actions":  { "suspend": { "mode": "cpu_rate", "cpu_rate_percent": 2 } } }
+]
+```
+
+How groups are set up:
+- **Names and roles.** `name` uses `a`–`z`, `0`–`9` and `_`, and can't be `default`. `critical` and `batch` take names or [match rules](#configuration), and each needs at least one entry.
+- **Inheritance.** `thresholds` and `actions` are optional, and any level or option you leave out comes from the top level. The usual rule `low` < `high` ≤ `critical` must still hold.
+- **One program, one policy.** A program name may belong to only one group, and the config is rejected if two groups (or a group and the top level) share one.
+- **Shared signals.** Machine-wide signals (`signals`, the system-memory trigger) feed every group whose critical process is running. Adaptive thresholds and the controller bias shift every group alike.
+- **Visibility.** `/api/v1/status` lists each group's pressure and thresholds, along with every managed batch process's group. Log entries carry a `group` field, and Prometheus gets `threadhaul_group_*` metrics.
 
 **Actions.** By default, throttling sets a batch process to Idle priority and suspending freezes every thread. The `actions` section changes what each stage does:
 
@@ -497,6 +518,7 @@ scrape_configs:
 | `threadhaul_batch_process_state{name,pid,state,manual_hold}` | gauge | 1 per managed batch process, in its current state |
 | `threadhaul_actions_total{action,trigger}` | counter | State changes since start (`priority_lowered`, `threads_suspended`, `recovered`) by trigger |
 | `threadhaul_log_events_total{log_type}` | counter | Log entries written since start, by type |
+| `threadhaul_group_pressure_percent{group}`, `_threshold_percent{group,level}`, `_active{group}` | gauge | Each policy group's pressure, effective thresholds, and whether its critical processes were sampled (only with `groups`) |
 | `threadhaul_signal_value{signal}`, `_pressure_percent{signal}`, `_up{signal}` | gauge | Each configured signal's reading, its share of the limit, and whether it could be read |
 | `threadhaul_auto_protect_enabled`, `_level{level}`, `_processes` | gauge | Auto-protect on/off, current level, programs lowered |
 | `threadhaul_system_cpu_percent`, `_memory_load_percent`, `_memory_used_bytes`, `_memory_total_bytes`, `_logical_cores` | gauge | Whole-machine figures (memory accurate to about 0.1 GB) |
