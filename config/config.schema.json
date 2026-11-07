@@ -133,6 +133,28 @@
         "port": { "type": "integer", "minimum": 1024, "maximum": 65535, "default": 8787 }
       }
     },
+    "signals": {
+      "type": "array",
+      "description": "Extra pressure sources read from Windows performance counters. Each counts as 100% pressure at its limit; the highest signal wins. Applied only while a critical process is running.",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["type", "limit"],
+        "properties": {
+          "type": { "enum": ["gpu", "disk_queue", "network", "counter"], "description": "gpu: 3D-engine utilisation %, disk_queue: physical disk queue length, network: MB/s over all interfaces, counter: any counter you name." },
+          "name": { "type": "string", "pattern": "^[a-z0-9_]{1,40}$", "description": "Shown in logs, status and metrics. Defaults to the type; required for type counter." },
+          "limit": { "type": "number", "exclusiveMinimum": 0, "description": "Value that counts as 100% pressure (in the signal's own unit)." },
+          "counter": { "type": "string", "pattern": "^\\\\.+\\\\.+", "description": "Type counter only: English counter path, e.g. \\Processor(_Total)\\% Processor Time. Wildcards (*) are combined." },
+          "aggregate": { "enum": ["sum", "max"], "default": "sum", "description": "How wildcard instances are combined." },
+          "instance_contains": { "type": "string", "description": "Only combine instances whose name contains this text (case-insensitive)." },
+          "scale": { "type": "number", "exclusiveMinimum": 0, "default": 1, "description": "Type counter only: multiply the value, e.g. 0.000000953674 for bytes to MB." }
+        },
+        "additionalProperties": false,
+        "if": { "properties": { "type": { "const": "counter" } } },
+        "then": { "required": ["name", "counter"] },
+        "else": { "not": { "anyOf": [{ "required": ["counter"] }, { "required": ["scale"] }] } }
+      }
+    },
     "metrics": {
       "type": "object",
       "description": "Prometheus endpoint at http://127.0.0.1:<dashboard.port>/metrics.",

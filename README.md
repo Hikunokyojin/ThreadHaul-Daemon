@@ -335,6 +335,7 @@ The service ignores the key. Rules that compare two fields (for example `low` < 
 | `coordination.*` | Central controller connection (see [Multi-server deployments](#multi-server-deployments)) | disabled |
 | `dashboard.enabled` / `port` | Dashboard on `127.0.0.1` | `true`, 8787 (1024–65535) |
 | `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
+| `signals[]` | Extra pressure sources from performance counters (see below) | none |
 | `metrics.enabled` / `token` | Prometheus endpoint at `/metrics` on the dashboard port (see [Prometheus metrics](#prometheus-metrics)) | `false`, none |
 
 **Encrypted secrets.** `coordination.shared_token` and `alerts.webhook_url` may hold a `dpapi:...` value instead of plain text. Run `ThreadHaulDaemon.exe protect-secret`, type the secret (it isn't echoed), and paste the printed value into `config.json`. The value only decrypts on the machine that created it.
@@ -358,6 +359,33 @@ Most Windows components are catalog-signed rather than signed inside the file, s
 
 **Memory and I/O triggers** convert each reading into a percentage of its limit and pass it through the same thresholds as CPU; the highest signal wins. For example, with a 95% limit, a system memory load of 81% counts as 85% pressure.
 
+**Signals from performance counters.** The `signals` list adds more pressure sources, read from Windows performance counters (the same ones Performance Monitor shows). Each signal counts as 100% pressure at its `limit` and joins the same "highest signal wins" rule. Signals apply only while a critical process is running.
+
+```json
+"signals": [
+  { "type": "gpu",        "limit": 90 },
+  { "type": "disk_queue", "limit": 4 },
+  { "type": "network",    "limit": 800 },
+  { "type": "counter", "name": "iis_connections",
+    "counter": "\\Web Service(_Total)\\Current Connections", "limit": 5000 }
+]
+```
+
+| `type` | Reads | Unit of `limit` |
+|---|---|---|
+| `gpu` | 3D-engine utilisation summed over every process (`\GPU Engine(*)\Utilization Percentage`) | percent |
+| `disk_queue` | `\PhysicalDisk(_Total)\Current Disk Queue Length` | queued requests |
+| `network` | `\Network Interface(*)\Bytes Total/sec`, all interfaces | MB/s |
+| `counter` | Any counter path you give in `counter` | the counter's own unit, times `scale` |
+
+How signals are configured:
+- **Combining instances.** For wildcard counters, `aggregate` (`sum` or `max`) combines the instances, and `instance_contains` keeps only instances whose name contains that text. Built-in types accept both options too: for example, `instance_contains: "engtype_Compute"` makes `gpu` measure compute work instead of 3D.
+- **English names.** Counter paths use the English names, so a config works on any Windows display language. Run `typeperf -qx` to list the counters available on a machine.
+- **Broken counters.** A counter that can't be read, such as an IIS counter on a machine without IIS, is logged once as `signal_error` and ignored.
+- **Logging and metrics.** With `telemetry.log_samples`, each poll's readings are logged as `signal_sample`. They also appear in `/api/v1/status` and as `threadhaul_signal_*` metrics.
+
+Signals are data, not code: ThreadHaul never loads third-party DLLs, so adding a signal can't run anything inside the privileged service.
+
 ## Logs and monitoring
 
 ### JSON Lines log
@@ -377,6 +405,7 @@ Every line of `C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl` is one JSO
 | `process_lifecycle` | A target appears, exits, crashes, restarts or is refused | `role`, `event`, `process_name/id`, `exit_code`, `previous_process_id` |
 | `config_reload` / `config_security` | The configuration changed, was rejected, or its permissions are too open | `success`, `error`, `config_sha256` |
 | `adaptive_threshold` | Predictive thresholds moved | `offset_percent`, `slope_percent_per_sample`, `forecast_percent` |
+| `signal_sample` / `signal_error` | Each poll's performance-counter signal readings; a signal that can't be read (once per error) | `signals[]` with `signal`, `value`, `pressure_percent` / `signal`, `error` |
 | `identity_mismatch` | A process has a pinned name but the wrong path or publisher (once per process) | `process_name/id`, `image_path`, `publisher`, `reason` |
 | `manual_override` / `dashboard_action` | A command or role change from the CLI or dashboard | `command` / `role`, `result`, `confirmed_risk` |
 | `alert`, `self_monitor`, `service_lifecycle`, `dashboard`, `coordination` | Alerts, the service's own footprint, start and stop, dashboard and controller events | |
@@ -416,6 +445,7 @@ scrape_configs:
 | `threadhaul_batch_process_state{name,pid,state,manual_hold}` | gauge | 1 per managed batch process, in its current state |
 | `threadhaul_actions_total{action,trigger}` | counter | State changes since start (`priority_lowered`, `threads_suspended`, `recovered`) by trigger |
 | `threadhaul_log_events_total{log_type}` | counter | Log entries written since start, by type |
+| `threadhaul_signal_value{signal}`, `_pressure_percent{signal}`, `_up{signal}` | gauge | Each configured signal's reading, its share of the limit, and whether it could be read |
 | `threadhaul_auto_protect_enabled`, `_level{level}`, `_processes` | gauge | Auto-protect on/off, current level, programs lowered |
 | `threadhaul_system_cpu_percent`, `_memory_load_percent`, `_memory_used_bytes`, `_memory_total_bytes`, `_logical_cores` | gauge | Whole-machine figures (memory accurate to about 0.1 GB) |
 | `threadhaul_service_working_set_bytes`, `threadhaul_coordination_connected` | gauge | The service's own memory; 1 when connected to the controller |

@@ -42,6 +42,7 @@ add_library(threadhaul_core STATIC
     src/telemetry/CpuMath.cpp
     src/telemetry/ProcessMonitor.cpp
     src/telemetry/ProcessIdentity.cpp
+    src/telemetry/Signals.cpp
     src/telemetry/ProcessSafety.cpp
     src/telemetry/ProcessTable.cpp
     src/config/Config.cpp
@@ -64,7 +65,7 @@ add_library(threadhaul_core STATIC
 target_include_directories(threadhaul_core PUBLIC
     src/actuator src/telemetry src/config src/logging src/service src/common third_party)
 target_link_libraries(threadhaul_core PUBLIC
-    advapi32 ws2_32 winhttp wtsapi32 bcrypt crypt32 wintrust user32 shell32)
+    advapi32 ws2_32 winhttp wtsapi32 bcrypt crypt32 wintrust pdh user32 shell32)
 
 # --------------------------------------------------------------------------
 # Executables

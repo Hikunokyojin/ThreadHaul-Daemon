@@ -47,6 +47,13 @@ expect(edited(lambda c: c["alerts"].update(webhook_url="ftp://host/hook")), Fals
 expect(edited(lambda c: c["thresholds"]["high"].update(percent=0)), False, "threshold of 0%")
 expect(edited(lambda c: c.pop("logging")), False, "missing logging section")
 expect(edited(lambda c: c.update(metrics={"enabled": True, "token": "short"})), False, "metrics token under 16 chars")
+expect(edited(lambda c: c.update(signals=[{"type": "gpu", "limit": 90}, {"type": "network", "limit": 100},
+                                          {"type": "counter", "name": "sql_waits", "limit": 50,
+                                           "counter": r"\SQLServer:Wait Statistics(*)\Waits in progress",
+                                           "aggregate": "max"}])), True, "built-in and custom signals")
+expect(edited(lambda c: c.update(signals=[{"type": "counter", "limit": 1}])), False, "counter signal without name/counter")
+expect(edited(lambda c: c.update(signals=[{"type": "gpu", "limit": 1, "scale": 2}])), False, "scale on a built-in signal")
+expect(edited(lambda c: c.update(signals=[{"type": "gpu"}])), False, "signal without a limit")
 expect(edited(lambda c: c.update(metrics={"enabled": True, "token": "scrape-token-0123456789"})), True, "metrics with a token")
 expect(edited(lambda c: c.update(
     identity={"dispatch_api.exe": {"path": r"C:\Apps\d.exe", "publisher": "Contoso"},

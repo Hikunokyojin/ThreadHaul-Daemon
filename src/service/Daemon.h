@@ -23,6 +23,7 @@
 #include "ProcessIdentity.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
+#include "Signals.h"
 #include "ThresholdTracker.h"
 
 namespace daemon {
@@ -123,6 +124,9 @@ private:
     std::unique_ptr<Dashboard> dashboard_;
     std::unique_ptr<AutoProtector> autoProtect_;
     telemetry::IdentityFilter identity_;
+    telemetry::SignalSet signals_;                    // poll thread only
+    std::vector<telemetry::SignalReading> lastSignals_;
+    std::set<std::string> signalErrorsLogged_;
     std::mutex countersMutex_;   // separate from mutex_: bumped from logging paths
     MetricCounters counters_;
     void OnAutoProtect(const char* event, const AutoProtector::Entry* e, DWORD from, DWORD to,

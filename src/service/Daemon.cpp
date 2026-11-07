@@ -207,6 +207,26 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
         for (const auto& p : cfg.identities) pinned[p.name] = {p.path, p.publisher};
         identity_.SetExpected(std::move(pinned));
     }
+    {
+        std::vector<telemetry::SignalSpec> specs;
+        for (const auto& sc : cfg.signals) {
+            telemetry::SignalSpec spec;
+            if (sc.type == "counter") {
+                spec.counter = sc.counter;
+                spec.scale = sc.scale;
+            } else {
+                telemetry::BuiltInSignal(sc.type, spec);
+            }
+            spec.name = sc.name;
+            spec.limit = sc.limit;
+            spec.aggregate = sc.aggregate == "max" ? telemetry::Aggregate::Max : telemetry::Aggregate::Sum;
+            if (!sc.instanceContains.empty()) spec.instanceContains = sc.instanceContains;
+            specs.push_back(std::move(spec));
+        }
+        signals_.Configure(specs);
+        lastSignals_.clear();
+        signalErrorsLogged_.clear();
+    }
 
     const auto norm = cfg.cpuPerCore ? telemetry::CpuNormalization::PerCore
                                      : telemetry::CpuNormalization::TotalSystem;
@@ -423,6 +443,29 @@ void Daemon::Poll() {
     }
     lastSamples_ = samples;
 
+    // Performance-counter signals: sampled every poll so rate counters see
+    // even intervals, but they only raise pressure while a critical process runs.
+    if (!signals_.Empty()) {
+        lastSignals_ = signals_.Sample();
+        ordered_json logged = ordered_json::array();
+        for (const telemetry::SignalReading& r : lastSignals_) {
+            if (!r.ok) {
+                if (signalErrorsLogged_.insert(r.name + "|" + r.error).second) {
+                    Log("signal_error", ordered_json{{"signal", r.name}, {"error", r.error}});
+                }
+                continue;
+            }
+            logged.push_back({{"signal", r.name}, {"value", Round1(r.value)}, {"pressure_percent", Round1(r.percent)}});
+            if (anyValid && r.percent > pressure) {
+                pressure = r.percent;
+                signal = r.name;
+            }
+        }
+        if (cfg_.logSamples && anyValid && !logged.empty()) {
+            Log("signal_sample", ordered_json{{"signals", logged}});
+        }
+    }
+
     DiscoverBatchProcesses(snapshot);
 
     // A critical instance that was only just (re)acquired has no CPU delta
@@ -598,6 +641,19 @@ std::string Daemon::StatusJson() {
                          {"manual_hold", m.IsManuallyHeld()}});
     });
     j["batch"] = batch;
+    ordered_json sig = ordered_json::array();
+    for (const telemetry::SignalReading& r : lastSignals_) {
+        ordered_json e{{"name", r.name}, {"ok", r.ok}};
+        if (r.ok) {
+            e["value"] = Round1(r.value);
+            e["pressure_percent"] = Round1(r.percent);
+            e["instances"] = r.instances;
+        } else {
+            e["error"] = r.error;
+        }
+        sig.push_back(e);
+    }
+    j["signals"] = sig;
     return j.dump();
 }
 

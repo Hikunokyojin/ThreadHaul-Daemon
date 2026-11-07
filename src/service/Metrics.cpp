@@ -144,6 +144,26 @@ std::string PrometheusText(const json& status, const MetricCounters& counters) {
         }
     }
 
+    const json signals = status.value("signals", json::array());
+    if (signals.is_array() && !signals.empty()) {
+        w.Family("threadhaul_signal_value", "gauge", "Current value of each configured performance-counter signal.");
+        for (const json& s : signals) {
+            double v;
+            if (Num(s, "value", v)) w.Sample("threadhaul_signal_value", Label("signal", s.value("name", "")), v);
+        }
+        w.Family("threadhaul_signal_pressure_percent", "gauge", "Each signal's value as a percentage of its limit.");
+        for (const json& s : signals) {
+            double v;
+            if (Num(s, "pressure_percent", v)) {
+                w.Sample("threadhaul_signal_pressure_percent", Label("signal", s.value("name", "")), v);
+            }
+        }
+        w.Family("threadhaul_signal_up", "gauge", "1 when the signal's counter could be read on the last poll.");
+        for (const json& s : signals) {
+            w.Sample("threadhaul_signal_up", Label("signal", s.value("name", "")), s.value("ok", false) ? 1 : 0);
+        }
+    }
+
     if (status.contains("coordination_connected") && status["coordination_connected"].is_boolean()) {
         w.Family("threadhaul_coordination_connected", "gauge",
                  "1 when connected to the central controller.");

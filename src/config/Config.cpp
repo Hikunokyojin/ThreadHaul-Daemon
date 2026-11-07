@@ -368,6 +368,46 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
         cfg.dashboardPort = OptInteger(*d, "port", "dashboard.port", 1024, 65535, 8787);
     }
 
+    if (const auto sig = root.find("signals"); sig != root.end()) {
+        if (!sig->is_array()) throw ConfigError("signals must be an array");
+        if (sig->size() > 16) throw ConfigError("signals: at most 16 signals");
+        for (size_t i = 0; i < sig->size(); ++i) {
+            const std::string where = "signals[" + std::to_string(i) + "]";
+            const json& s = (*sig)[i];
+            if (!s.is_object()) throw ConfigError(where + " must be an object");
+            DaemonConfig::SignalConfig sc;
+            sc.type = OptString(s, "type", where + ".type", "");
+            if (sc.type != "gpu" && sc.type != "disk_queue" && sc.type != "network" && sc.type != "counter") {
+                throw ConfigError(where + ".type must be gpu, disk_queue, network or counter");
+            }
+            sc.name = OptString(s, "name", where + ".name", sc.type == "counter" ? "" : sc.type);
+            if (sc.name.empty() || sc.name.size() > 40 ||
+                sc.name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+                throw ConfigError(where + ".name must be 1-40 characters of a-z, 0-9 and _");
+            }
+            for (const auto& other : cfg.signals) {
+                if (other.name == sc.name) throw ConfigError(where + ".name \"" + sc.name + "\" is used twice");
+            }
+            if (!s.contains("limit")) throw ConfigError(where + ".limit is required");
+            sc.limit = OptNumber(s, "limit", where + ".limit", 1e-9, 1e15, 1.0);
+            sc.aggregate = OptString(s, "aggregate", where + ".aggregate", "sum");
+            if (sc.aggregate != "sum" && sc.aggregate != "max") {
+                throw ConfigError(where + ".aggregate must be sum or max");
+            }
+            sc.instanceContains = Utf8ToWide(OptString(s, "instance_contains", where + ".instance_contains", ""));
+            if (sc.type == "counter") {
+                sc.counter = Utf8ToWide(OptString(s, "counter", where + ".counter", ""));
+                if (sc.counter.size() < 4 || sc.counter[0] != L'\\' || sc.counter.find(L'\\', 1) == std::wstring::npos) {
+                    throw ConfigError(where + ".counter must be a counter path such as \\Processor(_Total)\\% Processor Time");
+                }
+                sc.scale = OptNumber(s, "scale", where + ".scale", 1e-15, 1e15, 1.0);
+            } else if (s.contains("counter") || s.contains("scale")) {
+                throw ConfigError(where + ": counter and scale apply only to type \"counter\"");
+            }
+            cfg.signals.push_back(std::move(sc));
+        }
+    }
+
     if (const json* m = OptObject(root, "metrics", "metrics")) {
         cfg.metricsEnabled = OptBool(*m, "enabled", "metrics.enabled", false);
         cfg.metricsToken = Secret(OptString(*m, "token", "metrics.token", ""), "metrics.token");

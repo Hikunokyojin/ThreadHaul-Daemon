@@ -536,6 +536,38 @@ void ParsesMetricsSection() {
     ExpectRejected(__func__, cfg, "metrics.token");
 }
 
+void ParsesSignalsSection() {
+    Check(config::ParseConfig(kValidConfig).signals.empty(), __func__, "no signals by default");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["signals"] = nlohmann::json::array({
+        {{"type", "gpu"}, {"limit", 90}},
+        {{"type", "disk_queue"}, {"limit", 4}, {"name", "disk"}},
+        {{"type", "counter"}, {"name", "sql_waits"}, {"counter", "\\SQLServer:Wait Statistics(*)\\Waits in progress"},
+         {"aggregate", "max"}, {"instance_contains", "Lock"}, {"scale", 0.5}, {"limit", 100}}});
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.signals.size() == 3 && c.signals[0].name == "gpu" && c.signals[0].limit == 90, __func__,
+          "built-in name defaults to its type");
+    Check(c.signals.size() == 3 && c.signals[1].name == "disk" && c.signals[2].aggregate == "max" &&
+              c.signals[2].scale == 0.5 && c.signals[2].instanceContains == L"Lock",
+          __func__, "custom counter fields");
+    auto with = [&](nlohmann::json s) {
+        nlohmann::json x = nlohmann::json::parse(kValidConfig);
+        x["signals"] = nlohmann::json::array({s});
+        return x;
+    };
+    ExpectRejected(__func__, with({{"type", "teleport"}, {"limit", 1}}), "signals[0].type");
+    ExpectRejected(__func__, with({{"type", "gpu"}}), "signals[0].limit");
+    ExpectRejected(__func__, with({{"type", "gpu"}, {"limit", 0}}), "signals[0].limit");
+    ExpectRejected(__func__, with({{"type", "counter"}, {"limit", 1}}), "signals[0].name");
+    ExpectRejected(__func__, with({{"type", "counter"}, {"name", "x"}, {"counter", "no-slash"}, {"limit", 1}}),
+                   "signals[0].counter");
+    ExpectRejected(__func__, with({{"type", "gpu"}, {"name", "Bad Name"}, {"limit", 1}}), "signals[0].name");
+    ExpectRejected(__func__, with({{"type", "gpu"}, {"limit", 1}, {"scale", 2}}), "signals[0]");
+    nlohmann::json dup = nlohmann::json::parse(kValidConfig);
+    dup["signals"] = nlohmann::json::array({{{"type", "gpu"}, {"limit", 1}}, {{"type", "gpu"}, {"limit", 2}}});
+    ExpectRejected(__func__, dup, "used twice");
+}
+
 void PrometheusTextFormat() {
     const char* t = "PrometheusTextFormat";
     const nlohmann::json status = nlohmann::json::parse(R"({
@@ -546,7 +578,9 @@ void PrometheusTextFormat() {
         "batch": [{"name": "inv\"oice.exe", "pid": 5190, "state": "throttled", "manual_hold": false}],
         "service": {"uptime_seconds": 120, "working_set_mb": 2},
         "system": {"cpu_percent": 71.3, "memory_load_percent": 40, "memory_used_gb": 1, "memory_total_gb": 16, "logical_cores": 8},
-        "auto_protect": {"enabled": true, "level": "throttling", "processes": [{"pid": 1}]}
+        "auto_protect": {"enabled": true, "level": "throttling", "processes": [{"pid": 1}]},
+        "signals": [{"name": "gpu", "ok": true, "value": 45, "pressure_percent": 50},
+                    {"name": "broken", "ok": false, "error": "counter not found"}]
     })");
     daemon::MetricCounters counters;
     counters.actions[{"priority_lowered", "automatic"}] = 3;
@@ -571,6 +605,11 @@ void PrometheusTextFormat() {
               has("threadhaul_actions_total{action=\"priority_lowered\",trigger=\"automatic\"} 3\n"),
           t, "action counter");
     Check(has("threadhaul_log_events_total{log_type=\"sample\"} 42\n"), t, "log event counter");
+    Check(has("threadhaul_signal_value{signal=\"gpu\"} 45\n") &&
+              has("threadhaul_signal_pressure_percent{signal=\"gpu\"} 50\n") &&
+              has("threadhaul_signal_up{signal=\"broken\"} 0\n") &&
+              !has("threadhaul_signal_value{signal=\"broken\"}"),
+          t, "signal metrics; broken signal only reports up=0");
     Check(text.back() == '\n' && !has("\r"), t, "LF line endings, ends with newline");
     Check(daemon::PrometheusLabel("a\\b\nc") == "a\\\\b\\nc", t, "backslash and newline escaped");
 
@@ -612,6 +651,7 @@ int main() {
     ProtectedSecretsDecrypt();
     ParsesIdentitySection();
     ParsesMetricsSection();
+    ParsesSignalsSection();
     PrometheusTextFormat();
     std::error_code ec;
     fs::remove_all(dir, ec);

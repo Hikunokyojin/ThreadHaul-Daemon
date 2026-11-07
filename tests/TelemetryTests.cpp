@@ -4,6 +4,7 @@
 #include "AdaptiveThresholds.h"
 #include "CpuMath.h"
 #include "ProcessIdentity.h"
+#include "Signals.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
 #include "AutoProtectPolicy.h"
@@ -399,6 +400,60 @@ void AutoProtectSelectsHeaviest() {
     Check(SelectAutoTargets(c, 20, 0).empty(), __func__, "no free slots");
 }
 
+void SignalCombining() {
+    using telemetry::Aggregate;
+    const std::vector<telemetry::CounterItem> items = {
+        {L"pid_1_luid_0x0_engtype_3D", 30.0}, {L"pid_2_luid_0x0_engtype_3D", 25.0},
+        {L"pid_2_luid_0x0_engtype_Copy", 90.0}};
+    double v = 0;
+    int used = 0;
+    telemetry::CombineInstances(items, Aggregate::Sum, L"engtype_3d", v, used);
+    Check(v == 55.0 && used == 2, __func__, "sum with case-insensitive filter");
+    telemetry::CombineInstances(items, Aggregate::Max, L"", v, used);
+    Check(v == 90.0 && used == 3, __func__, "max over all instances");
+    telemetry::CombineInstances(items, Aggregate::Sum, L"no-such-engine", v, used);
+    Check(v == 0.0 && used == 0, __func__, "filter matching nothing reads 0");
+
+    telemetry::SignalSpec s;
+    Check(telemetry::BuiltInSignal("network", s) && s.scale < 1e-5 && s.counter.find(L"Bytes Total/sec") != std::wstring::npos,
+          __func__, "network built-in converts bytes to MB");
+    Check(telemetry::BuiltInSignal("gpu", s) && s.instanceContains == L"engtype_3D", __func__, "gpu built-in");
+    Check(telemetry::BuiltInSignal("disk_queue", s), __func__, "disk_queue built-in");
+    Check(!telemetry::BuiltInSignal("teleport", s), __func__, "unknown type rejected");
+}
+
+void SignalSetReadsRealCounters() {
+    telemetry::SignalSet set;
+    telemetry::SignalSpec cpu;
+    cpu.name = "cpu_total";
+    cpu.counter = L"\\Processor(_Total)\\% Processor Time";
+    cpu.limit = 100;
+    telemetry::SignalSpec mem;
+    mem.name = "available_mb";
+    mem.counter = L"\\Memory\\Available MBytes";
+    mem.limit = 1024;
+    telemetry::SignalSpec nic;
+    telemetry::BuiltInSignal("network", nic);
+    nic.name = "network";
+    nic.limit = 100;
+    telemetry::SignalSpec bad;
+    bad.name = "missing";
+    bad.counter = L"\\No Such Object\\No Such Counter";
+    set.Configure({cpu, mem, nic, bad});
+    Sleep(250);  // rate counters need time between two collections
+    const auto r = set.Sample();
+    Check(r.size() == 4, __func__, "one reading per signal");
+    if (r.size() != 4) return;
+    Check(r[0].ok && r[0].value >= 0 && r[0].value <= 100 && r[0].percent == r[0].value, __func__,
+          "processor time read: " + r[0].error);
+    Check(r[1].ok && r[1].value > 0 && std::fabs(r[1].percent - 100.0 * r[1].value / 1024) < 1e-9, __func__,
+          "available memory read and scaled to percent: " + r[1].error);
+    Check(r[2].ok && r[2].value >= 0, __func__, "network built-in reads (sum of interfaces): " + r[2].error);
+    Check(!r[3].ok && !r[3].error.empty(), __func__, "missing counter reports an error instead of failing");
+    set.Configure({});
+    Check(set.Empty(), __func__, "reconfigure to none");
+}
+
 void IdentityRules() {
     using telemetry::ExpectedIdentity;
     using telemetry::ObservedIdentity;
@@ -491,6 +546,8 @@ int main() {
     AutoProtectSelectsHeaviest();
     IdentityRules();
     IdentityFilterOnOwnProcess();
+    SignalCombining();
+    SignalSetReadsRealCounters();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

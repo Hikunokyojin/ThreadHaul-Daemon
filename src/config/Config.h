@@ -92,6 +92,18 @@ struct DaemonConfig {
     bool dashboardEnabled = true;
     int  dashboardPort = 8787;
 
+    // "signals": extra pressure sources from performance counters.
+    struct SignalConfig {
+        std::string name;                // unique, [a-z0-9_]
+        std::string type;                // gpu | disk_queue | network | counter
+        std::wstring counter;            // type counter only: English PDH path
+        std::string aggregate = "sum";   // sum | max over wildcard instances
+        std::wstring instanceContains;   // optional instance-name filter
+        double scale = 1.0;              // type counter only
+        double limit = 0.0;              // value that counts as 100% pressure
+    };
+    std::vector<SignalConfig> signals;
+
     // Prometheus endpoint at http://127.0.0.1:<dashboard port>/metrics.
     bool metricsEnabled = false;
     std::string metricsToken;  // if set, scrapes need "Authorization: Bearer <token>"
