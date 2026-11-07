@@ -82,24 +82,79 @@ double Percent(const json& obj, const char* key, const std::string& path) {
     return x;
 }
 
-std::vector<std::wstring> NameList(const json& v, const std::string& path) {
+bool SameName(const std::wstring& a, const std::wstring& b);  // defined below
+
+std::wstring LowerW(std::wstring s) {
+    for (wchar_t& c : s) c = static_cast<wchar_t>(towlower(c));
+    return s;
+}
+
+std::string RuleString(const json& o, const char* key, const std::string& path) {
+    const auto it = o.find(key);
+    if (it == o.end()) return "";
+    if (!it->is_string() || it->get<std::string>().empty()) {
+        throw ConfigError(path + "." + key + " must be a non-empty string");
+    }
+    return it->get<std::string>();
+}
+
+// Process names, as strings or (when `rules` is given) objects with match
+// conditions. Duplicates are merged; a plain string makes the name match
+// every instance, overriding any conditions for it.
+std::vector<std::wstring> NameList(const json& v, const std::string& path,
+                                   std::map<std::wstring, std::vector<DaemonConfig::MatchRule>>* rules = nullptr) {
     if (!v.is_array()) {
         throw ConfigError(path + " must be an array of process names");
     }
     std::vector<std::wstring> names;
+    std::vector<std::wstring> unconditional;
+    auto addName = [&](const std::wstring& n) {
+        for (const auto& e : names) if (SameName(e, n)) return;
+        names.push_back(n);
+    };
     for (size_t i = 0; i < v.size(); ++i) {
         const std::string item = path + "[" + std::to_string(i) + "]";
-        if (!v[i].is_string()) {
-            throw ConfigError(item + " must be a string");
+        std::string name;
+        DaemonConfig::MatchRule rule;
+        const bool isRule = v[i].is_object() && rules != nullptr;
+        if (v[i].is_string()) {
+            name = v[i].get<std::string>();
+        } else if (isRule) {
+            for (const auto& [k, val] : v[i].items()) {
+                (void)val;
+                if (k != "name" && k != "command_line_contains" && k != "user" && k != "service") {
+                    throw ConfigError(item + ": unknown key \"" + k +
+                                      "\" (use name, command_line_contains, user, service)");
+                }
+            }
+            name = RuleString(v[i], "name", item);
+            if (name.empty()) throw ConfigError(item + ".name is required");
+            rule.commandLineContains = Utf8ToWide(RuleString(v[i], "command_line_contains", item));
+            rule.user = Utf8ToWide(RuleString(v[i], "user", item));
+            rule.service = Utf8ToWide(RuleString(v[i], "service", item));
+            if (rule.commandLineContains.empty() && rule.user.empty() && rule.service.empty()) {
+                throw ConfigError(item + " needs command_line_contains, user or service (or use a plain name)");
+            }
+        } else {
+            throw ConfigError(item + (rules ? " must be a name or an object with match conditions"
+                                            : " must be a string"));
         }
-        const std::string name = v[i].get<std::string>();
         if (name.empty()) {
             throw ConfigError(item + " must not be empty");
         }
         if (name.find_first_of("\\/") != std::string::npos) {
             throw ConfigError(item + " must be an executable name such as \"app.exe\", not a path");
         }
-        names.push_back(Utf8ToWide(name));
+        const std::wstring wname = Utf8ToWide(name);
+        addName(wname);
+        if (isRule) {
+            (*rules)[LowerW(wname)].push_back(std::move(rule));
+        } else {
+            unconditional.push_back(LowerW(wname));
+        }
+    }
+    if (rules) {
+        for (const auto& n : unconditional) rules->erase(n);
     }
     return names;
 }
@@ -216,8 +271,9 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
 
     const json& processes = Object(root, "processes", "processes");
     cfg.criticalProcesses = NameList(Field(processes, "critical", "processes.critical"),
-                                     "processes.critical");
-    cfg.batchProcesses = NameList(Field(processes, "batch", "processes.batch"), "processes.batch");
+                                     "processes.critical", &cfg.criticalRules);
+    cfg.batchProcesses = NameList(Field(processes, "batch", "processes.batch"), "processes.batch",
+                                  &cfg.batchRules);
     // Empty lists are allowed: the service then monitors nothing until
     // processes are assigned (for example from the dashboard).
     const auto prot = processes.find("protected");
@@ -226,9 +282,12 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
     }
     for (const std::wstring& c : cfg.criticalProcesses) {
         for (const std::wstring& b : cfg.batchProcesses) {
-            if (SameName(c, b)) {
+            // The same name may be in both lists only when both sides tell
+            // instances apart with conditions (critical wins if both match).
+            if (SameName(c, b) && (!cfg.criticalRules.count(LowerW(c)) || !cfg.batchRules.count(LowerW(c)))) {
                 throw ConfigError("\"" + WideToUtf8(c) +
-                                  "\" is listed in both processes.critical and processes.batch");
+                                  "\" is listed in both processes.critical and processes.batch; "
+                                  "that is only allowed when both entries have match conditions");
             }
         }
     }

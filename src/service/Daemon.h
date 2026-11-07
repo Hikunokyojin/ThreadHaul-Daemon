@@ -21,6 +21,7 @@
 #include "JsonLinesLogger.h"
 #include "Metrics.h"
 #include "ProcessIdentity.h"
+#include "ProcessMatch.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
 #include "Signals.h"
@@ -124,6 +125,7 @@ private:
     std::unique_ptr<Dashboard> dashboard_;
     std::unique_ptr<AutoProtector> autoProtect_;
     telemetry::IdentityFilter identity_;
+    telemetry::RoleMatcher matcher_;                  // per-instance critical/batch rules
     telemetry::SignalSet signals_;                    // poll thread only
     std::vector<telemetry::SignalReading> lastSignals_;
     std::set<std::string> signalErrorsLogged_;

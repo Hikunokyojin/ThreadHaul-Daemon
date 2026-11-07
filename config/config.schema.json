@@ -28,8 +28,8 @@
       "type": "object",
       "required": ["critical", "batch"],
       "properties": {
-        "critical": { "$ref": "#/$defs/exeList", "description": "Programs to keep responsive. A name may not also be in batch." },
-        "batch": { "$ref": "#/$defs/exeList", "description": "Programs that are throttled and suspended to protect the critical ones." },
+        "critical": { "$ref": "#/$defs/roleList", "description": "Programs to keep responsive. A name may also be in batch only if both entries have match conditions." },
+        "batch": { "$ref": "#/$defs/roleList", "description": "Programs that are throttled and suspended to protect the critical ones." },
         "protected": { "$ref": "#/$defs/exeList", "description": "Programs that are never managed." }
       }
     },
@@ -206,6 +206,27 @@
       "properties": {
         "percent": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 },
         "consecutive_samples": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    },
+    "roleList": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          { "type": "string", "minLength": 1, "pattern": "^[^\\\\/]+$", "description": "Executable name: every instance." },
+          {
+            "type": "object",
+            "description": "Only instances that meet every condition. Several entries for one name are alternatives.",
+            "required": ["name"],
+            "minProperties": 2,
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "pattern": "^[^\\\\/]+$" },
+              "command_line_contains": { "type": "string", "minLength": 1, "description": "Case-insensitive text the full command line must contain." },
+              "user": { "type": "string", "minLength": 1, "description": "Account it runs as: DOMAIN\\user, or user for any domain." },
+              "service": { "type": "string", "minLength": 1, "description": "Windows service name the process must host, e.g. wuauserv." }
+            },
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "exeList": {

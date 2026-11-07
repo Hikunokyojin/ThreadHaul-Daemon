@@ -219,6 +219,18 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
         identity_.SetExpected(std::move(pinned));
     }
     {
+        auto convert = [](const std::map<std::wstring, std::vector<config::DaemonConfig::MatchRule>>& in) {
+            std::map<std::wstring, std::vector<telemetry::MatchCondition>> out;
+            for (const auto& [name, rules] : in) {
+                for (const auto& r : rules) out[name].push_back({r.commandLineContains, r.user, r.service});
+            }
+            return out;
+        };
+        matcher_.Configure(telemetry::Role::Critical, cfg.criticalProcesses, convert(cfg.criticalRules));
+        matcher_.Configure(telemetry::Role::Batch, cfg.batchProcesses, convert(cfg.batchRules));
+        matcher_.BeginPoll(telemetry::SnapshotProcesses());
+    }
+    {
         std::vector<telemetry::SignalSpec> specs;
         for (const auto& sc : cfg.signals) {
             telemetry::SignalSpec spec;
@@ -289,8 +301,8 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
         for (const auto& [pid, state] : autoProtect_->States()) {
             (void)state;
             for (const auto& e : telemetry::SnapshotProcesses()) {
-                if (e.pid == pid && (Contains(cfg.criticalProcesses, e.name) ||
-                                     Contains(cfg.batchProcesses, e.name) ||
+                if (e.pid == pid && (matcher_.Member(telemetry::Role::Critical, e.pid, e.name) ||
+                                     matcher_.Member(telemetry::Role::Batch, e.pid, e.name) ||
                                      Contains(cfg.protectedProcesses, e.name))) {
                     autoProtect_->Exempt(pid, e.name);
                 }
@@ -396,10 +408,22 @@ void Daemon::Poll() {
                                               {"reason", r.reason}});
     }
 
+    // Per-instance role rules: critical tracking and batch discovery each see
+    // only the instances that match; one that matches both is critical.
+    matcher_.BeginPoll(snapshot);
+    const std::vector<telemetry::ProcessEntry> criticalSnapshot =
+        matcher_.Filter(snapshot, telemetry::Role::Critical);
+    std::set<DWORD> criticalPids;
+    for (const auto& e : criticalSnapshot) criticalPids.insert(e.pid);
+    std::vector<telemetry::ProcessEntry> batchSnapshot;
+    for (const auto& e : matcher_.Filter(snapshot, telemetry::Role::Batch)) {
+        if (!criticalPids.count(e.pid)) batchSnapshot.push_back(e);
+    }
+
     std::vector<telemetry::ProcessSample> samples;
     std::vector<telemetry::LifecycleEvent> events;
     for (auto& [name, tracked] : critical_) {
-        tracked->Poll(snapshot, samples, events);
+        tracked->Poll(criticalSnapshot, samples, events);
     }
     for (const telemetry::LifecycleEvent& e : events) {
         ordered_json f{{"role", "critical"},
@@ -477,7 +501,7 @@ void Daemon::Poll() {
         }
     }
 
-    DiscoverBatchProcesses(snapshot);
+    DiscoverBatchProcesses(batchSnapshot);
 
     // A critical instance that was only just (re)acquired has no CPU delta
     // yet; skip the state machines for that one poll rather than feed 0%.
@@ -533,7 +557,8 @@ void Daemon::Poll() {
 
     if (autoProtect_) {
         autoProtect_->Tick([this](const std::wstring& name, DWORD pid) {
-            return Contains(cfg_.criticalProcesses, name) || Contains(cfg_.batchProcesses, name) ||
+            return matcher_.Member(telemetry::Role::Critical, pid, name) ||
+                   matcher_.Member(telemetry::Role::Batch, pid, name) ||
                    Contains(cfg_.protectedProcesses, name) || actuator_->Find(pid) != nullptr;
         });
     }
@@ -1073,7 +1098,7 @@ std::string Daemon::HandleCommand(const std::string& line) {
         std::string outcome;
         bool ok = true;
         actuator::ProcessStateMachine* m = actuator_->Find(e.pid);
-        if (Contains(cfg_.criticalProcesses, e.name)) {
+        if (matcher_.Member(telemetry::Role::Critical, e.pid, e.name)) {
             ok = false;
             outcome = "refused: configured as a critical process";
         } else if (verb == "throttle" || verb == "suspend") {

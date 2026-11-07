@@ -5,6 +5,7 @@
 #include "CpuMath.h"
 #include "ProcessIdentity.h"
 #include "Signals.h"
+#include "ProcessMatch.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
 #include "AutoProtectPolicy.h"
@@ -400,6 +401,60 @@ void AutoProtectSelectsHeaviest() {
     Check(SelectAutoTargets(c, 20, 0).empty(), __func__, "no free slots");
 }
 
+void MatchConditions() {
+    using telemetry::MatchCondition;
+    const telemetry::ProcessFacts f{L"\"C:\\Java\\bin\\java.exe\" -jar D:\\jobs\\Nightly-Export.jar --full",
+                                    L"CONTOSO\\svc_batch"};
+    Check(telemetry::ConditionMatches({L"nightly-export.jar", L"", L""}, 10, f, 0), __func__,
+          "command line substring, case-insensitive");
+    Check(!telemetry::ConditionMatches({L"api-server.jar", L"", L""}, 10, f, 0), __func__, "other command line");
+    Check(telemetry::ConditionMatches({L"", L"svc_batch", L""}, 10, f, 0), __func__, "bare user matches any domain");
+    Check(telemetry::ConditionMatches({L"", L"contoso\\SVC_BATCH", L""}, 10, f, 0), __func__, "domain\\user exact");
+    Check(!telemetry::ConditionMatches({L"", L"FABRIKAM\\svc_batch", L""}, 10, f, 0), __func__, "wrong domain");
+    Check(telemetry::ConditionMatches({L"", L"", L"wuauserv"}, 10, f, 10), __func__, "hosts the service");
+    Check(!telemetry::ConditionMatches({L"", L"", L"wuauserv"}, 10, f, 11), __func__, "another process hosts it");
+    Check(!telemetry::ConditionMatches({L"", L"", L"wuauserv"}, 10, f, 0), __func__, "service stopped");
+    Check(!telemetry::ConditionMatches({L"export", L"someone_else", L""}, 10, f, 0), __func__,
+          "all conditions in a rule must hold");
+    Check(!telemetry::ConditionMatches({L"export", L"", L""}, 10, telemetry::ProcessFacts{}, 0), __func__,
+          "unreadable command line never matches");
+}
+
+void MatchesRealProcesses() {
+    const DWORD self = GetCurrentProcessId();
+    const std::wstring cmd = telemetry::ProcessCommandLine(self);
+    Check(cmd.find(L"TelemetryTests") != std::wstring::npos, __func__, "reads own command line");
+    const std::wstring user = telemetry::ProcessUser(self);
+    Check(user.find(L'\\') != std::wstring::npos, __func__, "reads own account as DOMAIN\\user");
+    Check(telemetry::ServiceProcessId(L"EventLog") != 0, __func__, "finds the Event Log service's process");
+    Check(telemetry::ServiceProcessId(L"NoSuchService_ThreadHaul") == 0, __func__, "unknown service is 0");
+
+    const auto snapshot = telemetry::SnapshotProcesses();
+    auto member = [&](std::vector<telemetry::MatchCondition> rules) {
+        telemetry::RoleMatcher m;
+        std::map<std::wstring, std::vector<telemetry::MatchCondition>> r;
+        if (!rules.empty()) r[L"telemetrytests.exe"] = rules;
+        m.Configure(telemetry::Role::Batch, {L"TelemetryTests.exe"}, r);
+        m.BeginPoll(snapshot);
+        return m.Member(telemetry::Role::Batch, self, L"TelemetryTests.exe");
+    };
+    Check(member({}), __func__, "no rules: every instance");
+    Check(member({{L"telemetrytests", L"", L""}}), __func__, "command-line rule matches");
+    Check(!member({{L"definitely-not-in-the-command-line", L"", L""}}), __func__, "non-matching rule");
+    const size_t slash = user.find(L'\\');
+    Check(member({{L"", slash == std::wstring::npos ? user : user.substr(slash + 1), L""}}), __func__,
+          "user rule matches own account");
+    Check(!member({{L"", L"", L"EventLog"}}), __func__, "we do not host the Event Log service");
+    Check(member({{L"nope", L"", L""}, {L"telemetrytests", L"", L""}}), __func__, "rules are alternatives");
+
+    telemetry::RoleMatcher m;
+    m.Configure(telemetry::Role::Critical, {L"TelemetryTests.exe"}, {{L"telemetrytests.exe", {{L"nope", L"", L""}}}});
+    m.BeginPoll(snapshot);
+    const auto crit = m.Filter(snapshot, telemetry::Role::Critical);
+    Check(crit.empty(), __func__, "Filter drops non-matching instances");
+    Check(!m.Member(telemetry::Role::Batch, self, L"TelemetryTests.exe"), __func__, "names are per role");
+}
+
 void SignalCombining() {
     using telemetry::Aggregate;
     const std::vector<telemetry::CounterItem> items = {
@@ -548,6 +603,8 @@ int main() {
     IdentityFilterOnOwnProcess();
     SignalCombining();
     SignalSetReadsRealCounters();
+    MatchConditions();
+    MatchesRealProcesses();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

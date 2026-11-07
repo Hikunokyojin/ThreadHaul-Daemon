@@ -44,6 +44,7 @@ add_library(threadhaul_core STATIC
     src/telemetry/ProcessMonitor.cpp
     src/telemetry/ProcessIdentity.cpp
     src/telemetry/Signals.cpp
+    src/telemetry/ProcessMatch.cpp
     src/telemetry/ProcessSafety.cpp
     src/telemetry/ProcessTable.cpp
     src/config/Config.cpp

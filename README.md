@@ -316,7 +316,7 @@ The service ignores the key. Rules that compare two fields (for example `low` < 
 | `thresholds.high` | Throttle when pressure ≥ `percent` for `consecutive_samples` | 85%, 3 |
 | `thresholds.critical` | Suspend when pressure ≥ `percent` for `consecutive_samples` after throttling | 90%, 5 |
 | `thresholds.low` | Recover when pressure < `percent` for `consecutive_samples` | 60%, 5 |
-| `processes.critical` / `batch` / `protected` | Executable names (not paths); matched case-insensitively. May be empty. | |
+| `processes.critical` / `batch` / `protected` | Executable names (not paths); matched case-insensitively. May be empty. `critical` and `batch` entries can also be match rules (see below). | |
 | `identity.<name.exe>.path` / `publisher` | Pins a name to its full path and/or the publisher of its embedded signature. A process with that name that doesn't match gets no role and is logged as `identity_mismatch`. | none |
 | `logging.log_path` | JSON Lines log file | |
 | `logging.max_file_size_mb` / `max_rotated_files` | Rotation policy | 50 MB (1–1024), 5 files (0–100) |
@@ -340,6 +340,31 @@ The service ignores the key. Rules that compare two fields (for example `low` < 
 | `metrics.enabled` / `token` | Prometheus endpoint at `/metrics` on the dashboard port (see [Prometheus metrics](#prometheus-metrics)) | `false`, none |
 
 **Encrypted secrets.** `coordination.shared_token` and `alerts.webhook_url` may hold a `dpapi:...` value instead of plain text. Run `ThreadHaulDaemon.exe protect-secret`, type the secret (it isn't echoed), and paste the printed value into `config.json`. The value only decrypts on the machine that created it.
+
+**Match rules.** A plain name matches every running instance of that program. To tell instances of one executable apart, such as two `java.exe` or `python.exe` jobs, or one service inside `svchost.exe`, write the entry as an object:
+
+```json
+"processes": {
+  "critical": [ "dispatch_api.exe",
+                { "name": "java.exe", "command_line_contains": "api-server.jar" } ],
+  "batch":    [ { "name": "java.exe",    "command_line_contains": "nightly-export.jar" },
+                { "name": "python.exe",  "user": "CONTOSO\\svc_reports" },
+                { "name": "svchost.exe", "service": "wuauserv" } ]
+}
+```
+
+| Condition | Matches when |
+|---|---|
+| `command_line_contains` | The full command line contains this text (case-insensitive) |
+| `user` | The process runs as this account: `DOMAIN\user` exactly, or `user` in any domain |
+| `service` | The process hosts this Windows service (by service name, as in `sc query`) |
+
+How rules combine:
+- **Within an entry**, every condition must hold. **Several entries** for the same name are alternatives.
+- **Plain names win.** A plain name in the same list overrides that name's rules, so every instance matches.
+- **One name in both lists.** The same name may be in both `critical` and `batch` only when both entries have conditions. If one process matches both, it's treated as critical.
+- **Manual commands and auto-protect.** Manual `throttle` and `suspend` refuse only the instances that match a critical rule. Auto-protect skips only the instances that match a rule.
+- **Dashboard.** Its role picker writes plain names and leaves rule entries untouched.
 
 **Identity pinning** example:
 

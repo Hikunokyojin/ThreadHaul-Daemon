@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -23,6 +24,18 @@ struct DaemonConfig {
     std::vector<std::wstring> criticalProcesses;
     std::vector<std::wstring> batchProcesses;
     std::vector<std::wstring> protectedProcesses;
+
+    // Optional per-instance conditions for critical/batch names, from object
+    // entries such as {"name":"java.exe","command_line_contains":"batch.jar"}.
+    // Key: lower-case exe name. A name with no entry here matches every
+    // instance. Conditions within a rule must all hold; rules are alternatives.
+    struct MatchRule {
+        std::wstring commandLineContains;
+        std::wstring user;      // "DOMAIN\\user" or "user"
+        std::wstring service;   // service name, e.g. "wuauserv"
+    };
+    std::map<std::wstring, std::vector<MatchRule>> criticalRules;
+    std::map<std::wstring, std::vector<MatchRule>> batchRules;
 
     // "identity": {"app.exe": {"path": "C:\\...\\app.exe", "publisher": "Contoso Ltd"}}
     // A process with a pinned name gets its role only if it matches.

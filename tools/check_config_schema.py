@@ -58,6 +58,11 @@ expect(edited(lambda c: c.update(actions={"throttle": {"priority": "below_normal
                                                        "affinity_cores": 2, "cpu_rate_percent": 25},
                                           "suspend": {"mode": "cpu_rate", "cpu_rate_percent": 2}})), True, "all actions")
 expect(edited(lambda c: c.update(actions={"throttle": {"priority": "realtime"}})), False, "realtime priority")
+expect(edited(lambda c: c["processes"].update(
+    critical=["a.exe", {"name": "java.exe", "command_line_contains": "api.jar"}],
+    batch=[{"name": "java.exe", "user": "svc"}, {"name": "svchost.exe", "service": "wuauserv"}])), True, "match rules")
+expect(edited(lambda c: c["processes"].update(batch=[{"name": "java.exe"}])), False, "rule without a condition")
+expect(edited(lambda c: c["processes"].update(protected=[{"name": "a.exe", "user": "x"}])), False, "rule in protected")
 expect(edited(lambda c: c.update(actions={"suspend": {"mode": "kill"}})), False, "unknown suspend mode")
 expect(edited(lambda c: c.update(metrics={"enabled": True, "token": "scrape-token-0123456789"})), True, "metrics with a token")
 expect(edited(lambda c: c.update(

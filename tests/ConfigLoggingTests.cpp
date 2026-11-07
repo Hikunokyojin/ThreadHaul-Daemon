@@ -536,6 +536,51 @@ void ParsesMetricsSection() {
     ExpectRejected(__func__, cfg, "metrics.token");
 }
 
+void ParsesMatchRules() {
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["processes"]["critical"] = {"dispatch_api.exe",
+                                    {{"name", "java.exe"}, {"command_line_contains", "api-server.jar"}}};
+    cfg["processes"]["batch"] = {"invoice_batch.exe",
+                                 {{"name", "java.exe"}, {"command_line_contains", "nightly-export.jar"}},
+                                 {{"name", "JAVA.exe"}, {"user", "svc_reports"}},
+                                 {{"name", "svchost.exe"}, {"service", "wuauserv"}}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.criticalProcesses.size() == 2 && c.batchProcesses.size() == 3, __func__,
+          "names merged case-insensitively (java.exe listed twice in batch)");
+    Check(c.criticalRules.count(L"java.exe") && c.criticalRules.at(L"java.exe").size() == 1 &&
+              c.criticalRules.at(L"java.exe")[0].commandLineContains == L"api-server.jar",
+          __func__, "critical rule");
+    Check(c.batchRules.count(L"java.exe") && c.batchRules.at(L"java.exe").size() == 2 &&
+              c.batchRules.at(L"java.exe")[1].user == L"svc_reports",
+          __func__, "two alternative batch rules for java.exe");
+    Check(c.batchRules.at(L"svchost.exe")[0].service == L"wuauserv", __func__, "service rule");
+    Check(!c.criticalRules.count(L"dispatch_api.exe"), __func__, "plain names have no rules");
+
+    nlohmann::json plain = cfg;
+    plain["processes"]["batch"].push_back("svchost.exe");
+    Check(!config::ParseConfig(plain.dump()).batchRules.count(L"svchost.exe"), __func__,
+          "a plain name overrides its rules: every instance");
+
+    nlohmann::json both = nlohmann::json::parse(kValidConfig);
+    both["processes"]["critical"] = {"java.exe"};
+    both["processes"]["batch"] = {{{"name", "java.exe"}, {"command_line_contains", "x"}}};
+    ExpectRejected(__func__, both, "only allowed when both entries have match conditions");
+
+    auto withBatch = [&](nlohmann::json entry) {
+        nlohmann::json x = nlohmann::json::parse(kValidConfig);
+        x["processes"]["batch"] = nlohmann::json::array({entry});
+        return x;
+    };
+    ExpectRejected(__func__, withBatch({{"name", "a.exe"}}), "needs command_line_contains, user or service");
+    ExpectRejected(__func__, withBatch({{"command_line_contains", "x"}}), "processes.batch[0].name is required");
+    ExpectRejected(__func__, withBatch({{"name", "a.exe"}, {"cmdline", "x"}}), "unknown key");
+    ExpectRejected(__func__, withBatch({{"name", "C:\\a.exe"}, {"user", "x"}}), "not a path");
+    ExpectRejected(__func__, withBatch({{"name", "a.exe"}, {"user", ""}}), "must be a non-empty string");
+    nlohmann::json prot = nlohmann::json::parse(kValidConfig);
+    prot["processes"]["protected"] = {{{"name", "a.exe"}, {"user", "x"}}};
+    ExpectRejected(__func__, prot, "processes.protected[0] must be a string");
+}
+
 void ParsesActionsSection() {
     const auto d = config::ParseConfig(kValidConfig).actions;
     Check(d.throttlePriority == "idle" && d.throttleIoPriority == "unchanged" && d.throttleAffinityCores == 0 &&
@@ -680,6 +725,7 @@ int main() {
     ParsesMetricsSection();
     ParsesSignalsSection();
     ParsesActionsSection();
+    ParsesMatchRules();
     PrometheusTextFormat();
     std::error_code ec;
     fs::remove_all(dir, ec);
