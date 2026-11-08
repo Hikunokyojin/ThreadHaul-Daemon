@@ -216,8 +216,15 @@ void HttpServer::Serve(unsigned long long rawSock) {
                       "\r\nReferrer-Policy: no-referrer"
                       "\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; "
                       "style-src 'self'; img-src 'self' data:; connect-src 'self'; "
-                      "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
-                      "\r\nConnection: close\r\n\r\n";
+                      "frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+    for (const auto& [name, value] : res.headers) {
+        if (name.find_first_of("\r\n:") != std::string::npos ||
+            value.find_first_of("\r\n") != std::string::npos) {
+            continue;  // never let a value split the header block
+        }
+        out += "\r\n" + name + ": " + value;
+    }
+    out += "\r\nConnection: close\r\n\r\n";
     SendAll(s, out);
     SendAll(s, res.body);
 }

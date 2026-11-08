@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "JsonLinesLogger.h"
 #include "LogChain.h"
+#include "Metrics.h"
 #include "Secrets.h"
 
 #include <nlohmann/json.hpp>
@@ -390,6 +391,22 @@ void SetsProcessRoles() {
     c = config::ParseConfig(out);
     Check(c.protectedProcesses.size() == 2, __func__, "added to protected");
 
+    // The dashboard's rewrite keeps the editor schema pointer, and bad
+    // numbers are a ConfigError rather than an escaping JSON exception.
+    const std::string withSchema =
+        "{\"$schema\":\"https://example.invalid/s.json\"," + base.substr(base.find('{') + 1);
+    const std::string kept = config::SetProcessRole(withSchema, "a.exe", "batch");
+    Check(kept.find("\"$schema\"") != std::string::npos && kept.find("\"$schema\"") < kept.find("\"polling\""),
+          __func__, "$schema kept first");
+    bool configError = false;
+    try {
+        config::SetProcessRole("{\"processes\":{\"critical\":[],\"batch\":[]},\"x\":1e309}", "a.exe", "batch");
+    } catch (const config::ConfigError&) {
+        configError = true;
+    } catch (...) {
+    }
+    Check(configError, __func__, "out-of-range number reported as ConfigError");
+
     Check(out.find("\"polling\"") < out.find("\"thresholds\"") &&
               out.find("\"thresholds\"") < out.find("\"processes\""),
           __func__, "key order preserved");
@@ -507,6 +524,294 @@ void ParsesIdentitySection() {
     ExpectRejected(__func__, with({{"a.exe", {{"path", "relative\\a.exe"}}}}), "identity.a.exe.path");
 }
 
+void ParsesMetricsSection() {
+    Check(!config::ParseConfig(kValidConfig).metricsEnabled, __func__, "metrics off by default");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["metrics"] = {{"enabled", true}, {"token", "scrape-token-0123456789"}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.metricsEnabled && c.metricsToken == "scrape-token-0123456789", __func__, "metrics values");
+    cfg["metrics"] = {{"enabled", true}, {"token", "short"}};
+    ExpectRejected(__func__, cfg, "metrics.token");
+    cfg["metrics"] = {{"enabled", true}, {"token", "has a space in it 0123"}};
+    ExpectRejected(__func__, cfg, "metrics.token");
+}
+
+void SchedulesSelectByTime() {
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    const nlohmann::json weekdays = {"mon", "tue", "wed", "thu", "fri"};
+    cfg["groups"] = nlohmann::json::array({{{"name", "reports"}, {"critical", {"sqlservr.exe"}}, {"batch", {"etl.exe"}}}});
+    cfg["schedules"] = nlohmann::json::array({
+        {{"name", "business"}, {"days", weekdays}, {"from", "08:00"}, {"to", "18:00"},
+         {"thresholds", {{"high", {{"percent", 70}, {"consecutive_samples", 3}}}}}},
+        {{"name", "nightly"}, {"days", weekdays}, {"from", "22:00"}, {"to", "06:00"}, {"mode", "off"}},
+        {{"name", "lunch"}, {"days", weekdays}, {"from", "12:00"}, {"to", "13:00"}, {"mode", "off"}},
+        {{"name", "reports_weekend"}, {"group", "reports"}, {"days", {"sat", "sun"}}, {"from", "00:00"}, {"to", "24:00"},
+         {"actions", {{"suspend", {{"mode", "cpu_rate"}, {"cpu_rate_percent", 5}}}}}}});
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.schedules.size() == 4 && c.schedules[3].group == 1, __func__, "schedules parsed, group resolved");
+    Check(c.schedules[0].high.percent == 70 && c.schedules[0].critical_.percent == c.critical.percent,
+          __func__, "override applied on top of the group's policy");
+    Check(c.schedules[3].actions.suspendMode == "cpu_rate" && c.schedules[3].high.percent == c.high.percent,
+          __func__, "group schedule inherits the group's thresholds");
+    auto at = [&](int group, int day, const char* hhmm) {
+        const int m = ((hhmm[0] - '0') * 10 + (hhmm[1] - '0')) * 60 + (hhmm[3] - '0') * 10 + (hhmm[4] - '0');
+        const int i = config::ActiveSchedule(c, group, day, m);
+        return i < 0 ? std::string("none") : c.schedules[i].name;
+    };
+    // Weekdays: 0 = Sunday ... 6 = Saturday.
+    Check(at(0, 1, "09:30") == "business", __func__, "Monday morning: business hours");
+    Check(at(0, 1, "17:59") == "business" && at(0, 1, "18:00") == "none", __func__, "window end is exclusive");
+    Check(at(0, 3, "12:30") == "business", __func__, "first matching schedule wins (business before lunch)");
+    Check(at(0, 1, "23:15") == "nightly" && at(0, 2, "05:59") == "nightly", __func__, "overnight window spans midnight");
+    Check(at(0, 6, "05:00") == "nightly", __func__, "Friday night's window runs into Saturday morning");
+    Check(at(0, 1, "05:00") == "none", __func__, "Monday early morning: Sunday is not a listed day");
+    Check(at(0, 6, "10:00") == "none", __func__, "weekend daytime: no default-group schedule");
+    Check(at(1, 0, "00:00") == "reports_weekend" && at(1, 6, "23:59") == "reports_weekend", __func__,
+          "00:00-24:00 covers the whole day");
+    Check(at(1, 1, "09:30") == "none", __func__, "schedules only apply to their own group");
+    Check(c.schedules[1].off, __func__, "mode off parsed");
+
+    auto with = [&](nlohmann::json s) {
+        nlohmann::json x = cfg;
+        x["schedules"] = nlohmann::json::array({s});
+        return x;
+    };
+    const nlohmann::json base = {{"name", "s"}, {"days", {"mon"}}, {"from", "08:00"}, {"to", "09:00"}, {"mode", "off"}};
+    auto edit = [&](const char* key, nlohmann::json v) { nlohmann::json s = base; s[key] = v; return with(s); };
+    ExpectRejected(__func__, edit("from", "8:00"), "schedules[0].from must be a time HH:MM");
+    ExpectRejected(__func__, edit("from", "24:00"), "schedules[0].from must be a time");
+    ExpectRejected(__func__, edit("to", "25:00"), "schedules[0].to must be a time");
+    ExpectRejected(__func__, edit("to", "08:00"), "from and to are the same");
+    ExpectRejected(__func__, edit("days", {"monday"}), "schedules[0].days");
+    ExpectRejected(__func__, edit("days", nlohmann::json::array()), "schedules[0].days");
+    ExpectRejected(__func__, edit("group", "nope"), "is not a defined group");
+    ExpectRejected(__func__, edit("mode", "pause"), "schedules[0].mode");
+    nlohmann::json noop = base;
+    noop.erase("mode");
+    ExpectRejected(__func__, with(noop), "changes nothing");
+    nlohmann::json offWithThresholds = base;
+    offWithThresholds["thresholds"] = {{"high", {{"percent", 70}, {"consecutive_samples", 3}}}};
+    ExpectRejected(__func__, with(offWithThresholds), "no effect with mode \"off\"");
+    nlohmann::json badLevels = base;
+    badLevels.erase("mode");
+    badLevels["thresholds"] = {{"low", {{"percent", 95}, {"consecutive_samples", 3}}}};
+    ExpectRejected(__func__, with(badLevels), "low.percent must be below high.percent");
+}
+
+void ParsesGroups() {
+    Check(config::ParseConfig(kValidConfig).groups.empty(), __func__, "no groups by default");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["actions"] = {{"throttle", {{"priority", "below_normal"}}}};
+    cfg["groups"] = nlohmann::json::array({
+        {{"name", "reports"}, {"critical", {"sqlservr.exe"}}, {"batch", {"report_builder.exe", "etl.exe"}},
+         {"thresholds", {{"high", {{"percent", 95}, {"consecutive_samples", 5}}},
+                         {"critical", {{"percent", 97}, {"consecutive_samples", 5}}}}},
+         {"actions", {{"suspend", {{"mode", "cpu_rate"}, {"cpu_rate_percent", 2}}}}}},
+        {{"name", "web"}, {"critical", {{{"name", "java.exe"}, {"command_line_contains", "api.jar"}}}},
+         {"batch", {{{"name", "java.exe"}, {"command_line_contains", "crawl.jar"}}}}}});
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.groups.size() == 2 && c.groups[0].name == "reports", __func__, "two groups");
+    const auto& r = c.groups[0];
+    Check(r.high.percent == 95 && r.high.consecutiveSamples == 5 && r.critical_.percent == 97 &&
+              r.low.percent == c.low.percent,
+          __func__, "partial threshold override inherits the rest");
+    nlohmann::json bad = cfg;
+    bad["groups"][0]["thresholds"].erase("critical");
+    ExpectRejected(__func__, bad, "critical.percent must be at least high.percent");
+    Check(r.actions.throttlePriority == "below_normal" && r.actions.suspendMode == "cpu_rate", __func__,
+          "actions override layers on top-level actions");
+    Check(c.groups[1].actions.suspendMode == "freeze", __func__, "group without actions inherits top-level");
+    Check(c.criticalGroupOf.at(L"sqlservr.exe") == 1 && c.batchGroupOf.at(L"etl.exe") == 1 &&
+              c.criticalGroupOf.at(L"java.exe") == 2 && c.batchGroupOf.at(L"java.exe") == 2,
+          __func__, "names map to their group");
+    Check(!c.criticalGroupOf.count(L"dispatch_api.exe"), __func__, "top-level names are group 0");
+    bool merged = false;
+    for (const auto& n : c.batchProcesses) merged = merged || n == L"report_builder.exe";
+    Check(merged && c.batchRules.count(L"java.exe"), __func__, "group names and rules merged into the role lists");
+
+    auto with = [&](nlohmann::json groups) {
+        nlohmann::json x = nlohmann::json::parse(kValidConfig);
+        x["groups"] = groups;
+        return x;
+    };
+    const nlohmann::json ok = {{"name", "g"}, {"critical", {"x.exe"}}, {"batch", {"y.exe"}}};
+    ExpectRejected(__func__, with({{{"name", "default"}, {"critical", {"x.exe"}}, {"batch", {"y.exe"}}}}), "not \"default\"");
+    ExpectRejected(__func__, with({ok, ok}), "used twice");
+    ExpectRejected(__func__, with({{{"name", "g"}, {"critical", nlohmann::json::array()}, {"batch", {"y.exe"}}}}),
+                   "at least one critical and one batch");
+    ExpectRejected(__func__, with({{{"name", "g"}, {"critical", {"dispatch_api.exe"}}, {"batch", {"y.exe"}}}}),
+                   "already used by group \"default\"");
+    ExpectRejected(__func__, with({ok, {{"name", "h"}, {"critical", {"z.exe"}}, {"batch", {"Y.EXE"}}}}),
+                   "already used by group \"g\"");
+    ExpectRejected(__func__, with({{{"name", "g"}, {"critical", {"x.exe"}}, {"batch", {"y.exe"}},
+                                    {"thresholds", {{"low", {{"percent", 99}, {"consecutive_samples", 1}}}}}}}),
+                   "low.percent must be below high.percent");
+    ExpectRejected(__func__, with({{{"name", "g"}, {"critical", {"x.exe"}}, {"batch", {"y.exe"}},
+                                    {"actions", {{"suspend", {{"mode", "kill"}}}}}}}),
+                   "groups[0].actions.suspend.mode");
+}
+
+void ParsesMatchRules() {
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["processes"]["critical"] = {"dispatch_api.exe",
+                                    {{"name", "java.exe"}, {"command_line_contains", "api-server.jar"}}};
+    cfg["processes"]["batch"] = {"invoice_batch.exe",
+                                 {{"name", "java.exe"}, {"command_line_contains", "nightly-export.jar"}},
+                                 {{"name", "JAVA.exe"}, {"user", "svc_reports"}},
+                                 {{"name", "svchost.exe"}, {"service", "wuauserv"}}};
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.criticalProcesses.size() == 2 && c.batchProcesses.size() == 3, __func__,
+          "names merged case-insensitively (java.exe listed twice in batch)");
+    Check(c.criticalRules.count(L"java.exe") && c.criticalRules.at(L"java.exe").size() == 1 &&
+              c.criticalRules.at(L"java.exe")[0].commandLineContains == L"api-server.jar",
+          __func__, "critical rule");
+    Check(c.batchRules.count(L"java.exe") && c.batchRules.at(L"java.exe").size() == 2 &&
+              c.batchRules.at(L"java.exe")[1].user == L"svc_reports",
+          __func__, "two alternative batch rules for java.exe");
+    Check(c.batchRules.at(L"svchost.exe")[0].service == L"wuauserv", __func__, "service rule");
+    Check(!c.criticalRules.count(L"dispatch_api.exe"), __func__, "plain names have no rules");
+
+    nlohmann::json plain = cfg;
+    plain["processes"]["batch"].push_back("svchost.exe");
+    Check(!config::ParseConfig(plain.dump()).batchRules.count(L"svchost.exe"), __func__,
+          "a plain name overrides its rules: every instance");
+
+    nlohmann::json both = nlohmann::json::parse(kValidConfig);
+    both["processes"]["critical"] = {"java.exe"};
+    both["processes"]["batch"] = {{{"name", "java.exe"}, {"command_line_contains", "x"}}};
+    ExpectRejected(__func__, both, "only allowed when both entries have match conditions");
+
+    auto withBatch = [&](nlohmann::json entry) {
+        nlohmann::json x = nlohmann::json::parse(kValidConfig);
+        x["processes"]["batch"] = nlohmann::json::array({entry});
+        return x;
+    };
+    ExpectRejected(__func__, withBatch({{"name", "a.exe"}}), "needs command_line_contains, user or service");
+    ExpectRejected(__func__, withBatch({{"command_line_contains", "x"}}), "processes.batch[0].name is required");
+    ExpectRejected(__func__, withBatch({{"name", "a.exe"}, {"cmdline", "x"}}), "unknown key");
+    ExpectRejected(__func__, withBatch({{"name", "C:\\a.exe"}, {"user", "x"}}), "not a path");
+    ExpectRejected(__func__, withBatch({{"name", "a.exe"}, {"user", ""}}), "must be a non-empty string");
+    nlohmann::json prot = nlohmann::json::parse(kValidConfig);
+    prot["processes"]["protected"] = {{{"name", "a.exe"}, {"user", "x"}}};
+    ExpectRejected(__func__, prot, "processes.protected[0] must be a string");
+}
+
+void ParsesActionsSection() {
+    const auto d = config::ParseConfig(kValidConfig).actions;
+    Check(d.throttlePriority == "idle" && d.throttleIoPriority == "unchanged" && d.throttleAffinityCores == 0 &&
+              d.throttleCpuRatePercent == 0 && d.suspendMode == "freeze",
+          __func__, "defaults reproduce v2.0 behaviour");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["actions"] = {{"throttle", {{"priority", "below_normal"}, {"io_priority", "very_low"},
+                                    {"affinity_cores", 2}, {"cpu_rate_percent", 25}}},
+                      {"suspend", {{"mode", "cpu_rate"}, {"cpu_rate_percent", 3}}}};
+    const auto a = config::ParseConfig(cfg.dump()).actions;
+    Check(a.throttlePriority == "below_normal" && a.throttleIoPriority == "very_low" && a.throttleAffinityCores == 2 &&
+              a.throttleCpuRatePercent == 25 && a.suspendMode == "cpu_rate" && a.suspendCpuRatePercent == 3,
+          __func__, "all action fields");
+    auto with = [&](nlohmann::json act) {
+        nlohmann::json x = nlohmann::json::parse(kValidConfig);
+        x["actions"] = act;
+        return x;
+    };
+    ExpectRejected(__func__, with({{"throttle", {{"priority", "realtime"}}}}), "actions.throttle.priority");
+    ExpectRejected(__func__, with({{"throttle", {{"io_priority", "high"}}}}), "actions.throttle.io_priority");
+    ExpectRejected(__func__, with({{"throttle", {{"cpu_rate_percent", 150}}}}), "actions.throttle.cpu_rate_percent");
+    ExpectRejected(__func__, with({{"suspend", {{"mode", "kill"}}}}), "actions.suspend.mode");
+    ExpectRejected(__func__,
+                   with({{"throttle", {{"cpu_rate_percent", 5}}}, {"suspend", {{"mode", "cpu_rate"}, {"cpu_rate_percent", 10}}}}),
+                   "must be below actions.throttle.cpu_rate_percent");
+}
+
+void ParsesSignalsSection() {
+    Check(config::ParseConfig(kValidConfig).signals.empty(), __func__, "no signals by default");
+    nlohmann::json cfg = nlohmann::json::parse(kValidConfig);
+    cfg["signals"] = nlohmann::json::array({
+        {{"type", "gpu"}, {"limit", 90}},
+        {{"type", "disk_queue"}, {"limit", 4}, {"name", "disk"}},
+        {{"type", "counter"}, {"name", "sql_waits"}, {"counter", "\\SQLServer:Wait Statistics(*)\\Waits in progress"},
+         {"aggregate", "max"}, {"instance_contains", "Lock"}, {"scale", 0.5}, {"limit", 100}}});
+    const auto c = config::ParseConfig(cfg.dump());
+    Check(c.signals.size() == 3 && c.signals[0].name == "gpu" && c.signals[0].limit == 90, __func__,
+          "built-in name defaults to its type");
+    Check(c.signals.size() == 3 && c.signals[1].name == "disk" && c.signals[2].aggregate == "max" &&
+              c.signals[2].scale == 0.5 && c.signals[2].instanceContains == L"Lock",
+          __func__, "custom counter fields");
+    auto with = [&](nlohmann::json s) {
+        nlohmann::json x = nlohmann::json::parse(kValidConfig);
+        x["signals"] = nlohmann::json::array({s});
+        return x;
+    };
+    ExpectRejected(__func__, with({{"type", "teleport"}, {"limit", 1}}), "signals[0].type");
+    ExpectRejected(__func__, with({{"type", "gpu"}}), "signals[0].limit");
+    ExpectRejected(__func__, with({{"type", "gpu"}, {"limit", 0}}), "signals[0].limit");
+    ExpectRejected(__func__, with({{"type", "counter"}, {"limit", 1}}), "signals[0].name");
+    ExpectRejected(__func__, with({{"type", "counter"}, {"name", "x"}, {"counter", "no-slash"}, {"limit", 1}}),
+                   "signals[0].counter");
+    ExpectRejected(__func__, with({{"type", "gpu"}, {"name", "Bad Name"}, {"limit", 1}}), "signals[0].name");
+    ExpectRejected(__func__, with({{"type", "gpu"}, {"limit", 1}, {"scale", 2}}), "signals[0]");
+    nlohmann::json dup = nlohmann::json::parse(kValidConfig);
+    dup["signals"] = nlohmann::json::array({{{"type", "gpu"}, {"limit", 1}}, {{"type", "gpu"}, {"limit", 2}}});
+    ExpectRejected(__func__, dup, "used twice");
+}
+
+void PrometheusTextFormat() {
+    const char* t = "PrometheusTextFormat";
+    const nlohmann::json status = nlohmann::json::parse(R"({
+        "ok": true, "pressure_percent": 92.5, "offset_percent": 5,
+        "thresholds": {"high": 85, "critical": 90, "low": 60},
+        "coordination_connected": false,
+        "critical": [{"name": "dispatch_api.exe", "pid": 4821, "cpu_percent": 92.5}],
+        "batch": [{"name": "inv\"oice.exe", "pid": 5190, "state": "throttled", "manual_hold": false}],
+        "service": {"uptime_seconds": 120, "working_set_mb": 2},
+        "system": {"cpu_percent": 71.3, "memory_load_percent": 40, "memory_used_gb": 1, "memory_total_gb": 16, "logical_cores": 8},
+        "auto_protect": {"enabled": true, "level": "throttling", "processes": [{"pid": 1}]},
+        "groups": [{"name": "default", "active": true, "pressure_percent": 92.5, "thresholds": {"high": 85, "critical": 90, "low": 60}},
+                   {"name": "reports", "active": false, "pressure_percent": 0, "thresholds": {"high": 95, "critical": 97, "low": 60}}],
+        "signals": [{"name": "gpu", "ok": true, "value": 45, "pressure_percent": 50},
+                    {"name": "broken", "ok": false, "error": "counter not found"}]
+    })");
+    daemon::MetricCounters counters;
+    counters.actions[{"priority_lowered", "automatic"}] = 3;
+    counters.logEvents["sample"] = 42;
+    const std::string text = daemon::PrometheusText(status, counters);
+    auto has = [&](const std::string& s) { return text.find(s) != std::string::npos; };
+    Check(has("# TYPE threadhaul_up gauge\nthreadhaul_up 1\n"), t, "up gauge");
+    Check(has("threadhaul_pressure_percent 92.5\n"), t, "pressure");
+    Check(has("threadhaul_threshold_percent{level=\"critical\"} 90\n"), t, "threshold label");
+    Check(has("threadhaul_critical_process_cpu_percent{name=\"dispatch_api.exe\",pid=\"4821\"} 92.5\n"), t,
+          "critical cpu with labels");
+    Check(has("threadhaul_batch_processes{state=\"throttled\"} 1\n") &&
+              has("threadhaul_batch_processes{state=\"suspended\"} 0\n"),
+          t, "batch counts include zero states");
+    Check(has("name=\"inv\\\"oice.exe\""), t, "quote in label escaped");
+    Check(has("threadhaul_system_memory_total_bytes 17179869184\n"), t, "GiB converted to bytes");
+    Check(has("threadhaul_service_working_set_bytes 2097152\n"), t, "MB converted to bytes");
+    Check(has("threadhaul_auto_protect_level{level=\"throttling\"} 1\n") &&
+              has("threadhaul_auto_protect_level{level=\"idle\"} 0\n"),
+          t, "auto-protect level state set");
+    Check(has("# TYPE threadhaul_actions_total counter\n") &&
+              has("threadhaul_actions_total{action=\"priority_lowered\",trigger=\"automatic\"} 3\n"),
+          t, "action counter");
+    Check(has("threadhaul_log_events_total{log_type=\"sample\"} 42\n"), t, "log event counter");
+    Check(has("threadhaul_signal_value{signal=\"gpu\"} 45\n") &&
+              has("threadhaul_signal_pressure_percent{signal=\"gpu\"} 50\n") &&
+              has("threadhaul_signal_up{signal=\"broken\"} 0\n") &&
+              !has("threadhaul_signal_value{signal=\"broken\"}"),
+          t, "signal metrics; broken signal only reports up=0");
+    Check(has("threadhaul_group_pressure_percent{group=\"default\"} 92.5\n") &&
+              has("threadhaul_group_threshold_percent{group=\"reports\",level=\"high\"} 95\n") &&
+              has("threadhaul_group_active{group=\"reports\"} 0\n"),
+          t, "group metrics");
+    Check(text.back() == '\n' && !has("\r"), t, "LF line endings, ends with newline");
+    Check(daemon::PrometheusLabel("a\\b\nc") == "a\\\\b\\nc", t, "backslash and newline escaped");
+
+    const std::string minimal = daemon::PrometheusText(nlohmann::json::object(), {});
+    Check(minimal.find("threadhaul_up 1") != std::string::npos &&
+              minimal.find("threadhaul_pressure_percent") == std::string::npos,
+          t, "missing fields are skipped, not invented");
+}
+
 }
 
 int main() {
@@ -538,6 +843,13 @@ int main() {
     HashChainSpansRotation(dir);
     ProtectedSecretsDecrypt();
     ParsesIdentitySection();
+    ParsesMetricsSection();
+    ParsesSignalsSection();
+    ParsesActionsSection();
+    ParsesMatchRules();
+    ParsesGroups();
+    SchedulesSelectByTime();
+    PrometheusTextFormat();
     std::error_code ec;
     fs::remove_all(dir, ec);
 

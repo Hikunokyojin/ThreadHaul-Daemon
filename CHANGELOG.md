@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-08
+
+Expandability release. Existing configs keep working unchanged: every new section is optional, and the defaults reproduce 2.0.
+
+### Added
+
+- **Config schema.** `config/config.schema.json` (JSON Schema) gives editors autocomplete, descriptions and inline errors for every setting. The example config points at it with `$schema`, and CI checks it against the example and known-bad configs.
+- **Versioned API.**
+  - The dashboard API lives under `/api/v1`, and responses carry `API-Version: 1`.
+  - `GET /api/v1/openapi.json` serves an OpenAPI 3.1 description, which CI validates.
+  - The 2.0 paths (`/api/status` and so on) still work as aliases, answering with `Deprecation: true` and a `Link` to their v1 path.
+- **Prometheus metrics.** `metrics.enabled` serves `/metrics` on the dashboard port, loopback only, with an optional bearer `metrics.token` (DPAPI allowed). It covers:
+  - pressure, thresholds, per-instance critical CPU and batch states;
+  - auto-protect, system CPU and memory, and the controller link;
+  - counters of state changes and log entries;
+  - signal, group and schedule figures.
+- **Performance-counter signals.** `signals` adds pressure sources from Windows performance counters, read by English name:
+  - built-in `gpu`, `disk_queue` and `network`;
+  - a generic `counter` type for any counter, with sum/max over wildcard instances, an instance filter and a scale.
+
+  No third-party code is loaded.
+- **Configurable actions.** `actions` sets what each stage does, and recovery undoes exactly what was changed.
+  - Throttle can combine Idle or Below Normal priority, low or very low I/O priority, confinement to N cores, and a Job Object hard CPU cap.
+  - Suspend can freeze threads, or squeeze the process to a small CPU share so it stays alive.
+- **Process matching rules.** Entries in `processes.critical` and `processes.batch` may be objects with `command_line_contains`, `user` and/or `service`, so instances of one executable (such as `java.exe` or `svchost.exe`) get different roles.
+- **Policy groups.** `groups` defines independent policies, each with its own critical and batch processes and optional thresholds and actions. A group's batch processes respond only to its own critical processes.
+- **Schedules.** `schedules` changes a group's thresholds or actions in local-time windows, including past-midnight windows. `mode: "off"` pauses throttling.
+- **New log types:** `signal_sample`, `signal_error`, `action_error` and `schedule_change`. Samples and threshold events carry `group` when groups are configured.
+
+### Fixed
+
+- The dashboard's role editor let an out-of-range number in the config escape as an uncaught exception instead of reporting a config error.
+
 ## [2.0.0] - 2026-11-05
 
 Security release. **Breaking:** the controller protocol has changed, so upgrade every agent and the controller together. The controller now requires `--token`, and `coordination.shared_token` must be at least 16 characters.
@@ -73,6 +106,7 @@ First public release.
   - a log-graphing script.
 - **Builds:** CMake and `build.cmd`, with 231 unit-test checks, GitHub Actions CI and release packaging.
 
-[Unreleased]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases/tag/v1.0.0

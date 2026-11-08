@@ -253,16 +253,24 @@ This command asks the service for a per-session access key over the administrato
 | **Processes** | Every running process with CPU % (per core), memory, path and safety level, sortable and searchable. Assign a role to any program: **Critical**, **Batch**, **Protected** or **Unassigned**. The role is written to `config.json` (keeping its permissions) and applied immediately. |
 | **Activity log** | The JSON Lines log as a readable, colour-coded table, newest first. Filter by event type, search text or time range; click a row for its raw JSON; export the filtered rows as CSV. New entries stream in live. |
 
-**HTTP API.** Every request must carry the `X-ThreadHaul-Token` header.
+**HTTP API (v1).** The API is versioned under `/api/v1`. Every request must carry the session key in the `X-ThreadHaul-Token` header, except the API description itself. Every response carries `API-Version: 1`.
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/status` | Pressure, thresholds, critical and batch processes, auto-protect state, system CPU and memory, service details |
-| `GET /api/processes` | Every running process with CPU %, memory, path, role, safety level and managed state |
-| `GET /api/log?offset=N` | Log entries after byte offset `N`. `-1` returns the tail. The response includes the next offset and a `reset` flag after rotation. |
-| `POST /api/command` | `{"command":"suspend","target":"<pid or exe>","confirm":false}`. Commands are `throttle`, `suspend`, `resume`, `release` and `exempt`. |
-| `POST /api/role` | `{"name":"<exe>","role":"critical","confirm":false}`. Roles are `critical`, `batch`, `protected` and `none`. |
-| `POST /api/logout` | Ends the session: the key stops working immediately |
+| `GET /api/v1/openapi.json` | OpenAPI 3.1 description of the API. No key needed; import it into Postman, Swagger UI or a client generator. |
+| `GET /api/v1/status` | Pressure, thresholds, critical and batch processes, auto-protect state, system CPU and memory, service details |
+| `GET /api/v1/processes` | Every running process with CPU %, memory, path, role, safety level and managed state |
+| `GET /api/v1/log?offset=N` | Log entries after byte offset `N`. `-1` returns the tail. The response includes the next `offset` and a `reset` flag after rotation. |
+| `POST /api/v1/command` | `{"command":"suspend","target":"<pid or exe>","confirm":false}`. Commands are `throttle`, `suspend`, `resume`, `release` and `exempt`. |
+| `POST /api/v1/role` | `{"name":"<exe>","role":"critical","confirm":false}`. Roles are `critical`, `batch`, `protected` and `none`. |
+| `POST /api/v1/logout` | Ends the session: the key stops working immediately |
+
+The unversioned paths from v2.0 (`/api/status` and so on) still work as aliases of v1. They answer with `Deprecation: true` and a `Link` header naming the v1 path, and will be removed in a future major version. Other version prefixes (such as `/api/v2/`) return 404.
+
+```powershell
+$key = "<the #token= part of the dashboard link>"
+Invoke-RestMethod http://127.0.0.1:8787/api/v1/status -Headers @{ 'X-ThreadHaul-Token' = $key }
+```
 
 Making a system process or service critical or batch, or throttling or suspending one, returns `{"ok":false,"needs_confirmation":true,...}` until the request is repeated with `"confirm":true`. Essential processes are always refused.
 
@@ -294,13 +302,21 @@ How the commands behave:
 
 The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`; a fully commented-by-example copy is [`config/config.example.json`](config/config.example.json). Edit it from an elevated editor (for example `notepad` in an Administrator PowerShell). Changes apply within one poll interval; there is no need to restart.
 
+**Editor support.** [`config/config.schema.json`](config/config.schema.json) is a JSON Schema for the whole file. Add this as the first key and editors such as VS Code autocomplete every setting, show its description and default, and underline out-of-range values while you type:
+
+```json
+"$schema": "https://raw.githubusercontent.com/Hikunokyojin/ThreadHaul-Daemon/main/config/config.schema.json"
+```
+
+The service ignores the key. Rules that compare two fields (for example `low` < `high` ≤ `critical`) are checked only by the service, so still run `validate-config` before deploying.
+
 | Key | Description | Default (range) |
 |---|---|---|
 | `polling.interval_ms` | Time between samples | 1000 (100–60000) |
 | `thresholds.high` | Throttle when pressure ≥ `percent` for `consecutive_samples` | 85%, 3 |
 | `thresholds.critical` | Suspend when pressure ≥ `percent` for `consecutive_samples` after throttling | 90%, 5 |
 | `thresholds.low` | Recover when pressure < `percent` for `consecutive_samples` | 60%, 5 |
-| `processes.critical` / `batch` / `protected` | Executable names (not paths); matched case-insensitively. May be empty. | |
+| `processes.critical` / `batch` / `protected` | Executable names (not paths); matched case-insensitively. May be empty. `critical` and `batch` entries can also be match rules (see below). | |
 | `identity.<name.exe>.path` / `publisher` | Pins a name to its full path and/or the publisher of its embedded signature. A process with that name that doesn't match gets no role and is logged as `identity_mismatch`. | none |
 | `logging.log_path` | JSON Lines log file | |
 | `logging.max_file_size_mb` / `max_rotated_files` | Rotation policy | 50 MB (1–1024), 5 files (0–100) |
@@ -319,8 +335,38 @@ The installed service reads `C:\ProgramData\ThreadHaulDaemon\config.json`; a ful
 | `coordination.*` | Central controller connection (see [Multi-server deployments](#multi-server-deployments)) | disabled |
 | `dashboard.enabled` / `port` | Dashboard on `127.0.0.1` | `true`, 8787 (1024–65535) |
 | `security.require_protected_config` | Refuse a configuration file that non-administrators can modify | `false` |
+| `signals[]` | Extra pressure sources from performance counters (see below) | none |
+| `actions.throttle` / `actions.suspend` | What throttling and suspending do to a batch process (see below) | Idle priority; freeze |
+| `groups[]` | Extra independent policies, each with its own critical and batch processes, thresholds and actions (see below) | none |
+| `schedules[]` | Time windows that change a group's thresholds or actions, or turn throttling off (see below) | none |
+| `metrics.enabled` / `token` | Prometheus endpoint at `/metrics` on the dashboard port (see [Prometheus metrics](#prometheus-metrics)) | `false`, none |
 
 **Encrypted secrets.** `coordination.shared_token` and `alerts.webhook_url` may hold a `dpapi:...` value instead of plain text. Run `ThreadHaulDaemon.exe protect-secret`, type the secret (it isn't echoed), and paste the printed value into `config.json`. The value only decrypts on the machine that created it.
+
+**Match rules.** A plain name matches every running instance of that program. To tell instances of one executable apart, such as two `java.exe` or `python.exe` jobs, or one service inside `svchost.exe`, write the entry as an object:
+
+```json
+"processes": {
+  "critical": [ "dispatch_api.exe",
+                { "name": "java.exe", "command_line_contains": "api-server.jar" } ],
+  "batch":    [ { "name": "java.exe",    "command_line_contains": "nightly-export.jar" },
+                { "name": "python.exe",  "user": "CONTOSO\\svc_reports" },
+                { "name": "svchost.exe", "service": "wuauserv" } ]
+}
+```
+
+| Condition | Matches when |
+|---|---|
+| `command_line_contains` | The full command line contains this text (case-insensitive) |
+| `user` | The process runs as this account: `DOMAIN\user` exactly, or `user` in any domain |
+| `service` | The process hosts this Windows service (by service name, as in `sc query`) |
+
+How rules combine:
+- **Within an entry**, every condition must hold. **Several entries** for the same name are alternatives.
+- **Plain names win.** A plain name in the same list overrides that name's rules, so every instance matches.
+- **One name in both lists.** The same name may be in both `critical` and `batch` only when both entries have conditions. If one process matches both, it's treated as critical.
+- **Manual commands and auto-protect.** Manual `throttle` and `suspend` refuse only the instances that match a critical rule. Auto-protect skips only the instances that match a rule.
+- **Dashboard.** Its role picker writes plain names and leaves rule entries untouched.
 
 **Identity pinning** example:
 
@@ -341,6 +387,98 @@ Most Windows components are catalog-signed rather than signed inside the file, s
 
 **Memory and I/O triggers** convert each reading into a percentage of its limit and pass it through the same thresholds as CPU; the highest signal wins. For example, with a 95% limit, a system memory load of 81% counts as 85% pressure.
 
+**Signals from performance counters.** The `signals` list adds more pressure sources, read from Windows performance counters (the same ones Performance Monitor shows). Each signal counts as 100% pressure at its `limit` and joins the same "highest signal wins" rule. Signals apply only while a critical process is running.
+
+```json
+"signals": [
+  { "type": "gpu",        "limit": 90 },
+  { "type": "disk_queue", "limit": 4 },
+  { "type": "network",    "limit": 800 },
+  { "type": "counter", "name": "iis_connections",
+    "counter": "\\Web Service(_Total)\\Current Connections", "limit": 5000 }
+]
+```
+
+| `type` | Reads | Unit of `limit` |
+|---|---|---|
+| `gpu` | 3D-engine utilisation summed over every process (`\GPU Engine(*)\Utilization Percentage`) | percent |
+| `disk_queue` | `\PhysicalDisk(_Total)\Current Disk Queue Length` | queued requests |
+| `network` | `\Network Interface(*)\Bytes Total/sec`, all interfaces | MB/s |
+| `counter` | Any counter path you give in `counter` | the counter's own unit, times `scale` |
+
+How signals are configured:
+- **Combining instances.** For wildcard counters, `aggregate` (`sum` or `max`) combines the instances, and `instance_contains` keeps only instances whose name contains that text. Built-in types accept both options too: for example, `instance_contains: "engtype_Compute"` makes `gpu` measure compute work instead of 3D.
+- **English names.** Counter paths use the English names, so a config works on any Windows display language. Run `typeperf -qx` to list the counters available on a machine.
+- **Broken counters.** A counter that can't be read, such as an IIS counter on a machine without IIS, is logged once as `signal_error` and ignored.
+- **Logging and metrics.** With `telemetry.log_samples`, each poll's readings are logged as `signal_sample`. They also appear in `/api/v1/status` and as `threadhaul_signal_*` metrics.
+
+Signals are data, not code: ThreadHaul never loads third-party DLLs, so adding a signal can't run anything inside the privileged service.
+
+**Policy groups.** The top-level `processes`, `thresholds` and `actions` form one policy, the `default` group. Add `groups` when a machine runs several workloads that need different rules. Each group's batch processes respond only to *its own* critical processes, using its own thresholds and actions.
+
+```json
+"groups": [
+  { "name": "reports",
+    "critical": [ "sqlservr.exe" ],
+    "batch":    [ "report_builder.exe", "etl.exe" ],
+    "thresholds": { "high": { "percent": 95, "consecutive_samples": 5 },
+                    "critical": { "percent": 98, "consecutive_samples": 10 } },
+    "actions":  { "suspend": { "mode": "cpu_rate", "cpu_rate_percent": 2 } } }
+]
+```
+
+How groups are set up:
+- **Names and roles.** `name` uses `a`–`z`, `0`–`9` and `_`, and can't be `default`. `critical` and `batch` take names or [match rules](#configuration), and each needs at least one entry.
+- **Inheritance.** `thresholds` and `actions` are optional, and any level or option you leave out comes from the top level. The usual rule `low` < `high` ≤ `critical` must still hold.
+- **One program, one policy.** A program name may belong to only one group, and the config is rejected if two groups (or a group and the top level) share one.
+- **Shared signals.** Machine-wide signals (`signals`, the system-memory trigger) feed every group whose critical process is running. Adaptive thresholds and the controller bias shift every group alike.
+- **Visibility.** `/api/v1/status` lists each group's pressure and thresholds, along with every managed batch process's group. Log entries carry a `group` field, and Prometheus gets `threadhaul_group_*` metrics.
+
+**Schedules.** Change the rules by time of day and day of week, in the server's local time:
+
+```json
+"schedules": [
+  { "name": "business_hours", "days": ["mon","tue","wed","thu","fri"], "from": "08:00", "to": "18:00",
+    "thresholds": { "high": { "percent": 70, "consecutive_samples": 3 } } },
+  { "name": "nightly_batch", "days": ["mon","tue","wed","thu","fri"], "from": "22:00", "to": "06:00",
+    "mode": "off" },
+  { "name": "reports_weekend", "group": "reports", "days": ["sat","sun"], "from": "00:00", "to": "24:00",
+    "actions": { "suspend": { "mode": "cpu_rate", "cpu_rate_percent": 5 } } }
+]
+```
+
+How schedules work:
+- **Scope.** A schedule applies to one group: `default` (the top-level policy) unless `group` names one.
+- **What it changes.** During its window it overrides `thresholds` and/or `actions`; anything left out comes from the group. `mode: "off"` stops throttling for the window, and processes that are already throttled recover normally.
+- **Time windows.** `from` is inclusive and `to` is exclusive, and `24:00` means the end of the day. When `to` is earlier than `from`, the window runs past midnight and belongs to the day it starts on: Friday's 22:00–06:00 runs until Saturday 06:00.
+- **First match wins.** For each group, the first matching schedule in the list applies. Outside every window the group's normal policy applies.
+- **Visibility.** Every change is logged as `schedule_change`. The active schedule appears in `/api/v1/status` and as `threadhaul_schedule_active`, and the dashboard shows "off" while throttling is paused.
+
+**Actions.** By default, throttling sets a batch process to Idle priority and suspending freezes every thread. The `actions` section changes what each stage does:
+
+```json
+"actions": {
+  "throttle": { "priority": "below_normal", "io_priority": "very_low", "affinity_cores": 2, "cpu_rate_percent": 25 },
+  "suspend":  { "mode": "cpu_rate", "cpu_rate_percent": 2 }
+}
+```
+
+| Setting | Effect |
+|---|---|
+| `throttle.priority` | `idle` (default) or `below_normal` |
+| `throttle.io_priority` | `low` or `very_low`, so the job's disk access also yields to others. Default `unchanged`. |
+| `throttle.affinity_cores` | Confine the job to this many of its highest-numbered logical cores, leaving core 0 and the rest free. `0` = off. |
+| `throttle.cpu_rate_percent` | Hard CPU cap as a percentage of the *whole machine*, enforced by a Windows Job Object. `0` = off. |
+| `suspend.mode` | `freeze` (default) suspends every thread. `cpu_rate` keeps the process running at `suspend.cpu_rate_percent` of the machine, so its network connections and timers stay alive. |
+
+How actions are applied:
+- **Throttle options combine.** All the throttle options you set are applied together.
+- **Exact restore.** On recovery, ThreadHaul undoes exactly what it changed (the original affinity and I/O priority, and lifts the CPU cap), even if `actions` was edited in between.
+- **Failures.** If an action fails, for example because a process is already in a job that forbids nesting, the state change is logged with `actuation_succeeded: false`, and an `action_error` entry names the reason.
+- **Caveats.**
+  - Windows can't remove a process from a Job Object, so after recovery the process stays in an uncapped job until it exits.
+  - Affinity applies within the process's processor group.
+
 ## Logs and monitoring
 
 ### JSON Lines log
@@ -360,6 +498,9 @@ Every line of `C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jsonl` is one JSO
 | `process_lifecycle` | A target appears, exits, crashes, restarts or is refused | `role`, `event`, `process_name/id`, `exit_code`, `previous_process_id` |
 | `config_reload` / `config_security` | The configuration changed, was rejected, or its permissions are too open | `success`, `error`, `config_sha256` |
 | `adaptive_threshold` | Predictive thresholds moved | `offset_percent`, `slope_percent_per_sample`, `forecast_percent` |
+| `action_error` | A throttle, suspend or restore action failed | `batch_process_id/name`, `to_state`, `error` |
+| `schedule_change` | A group's active schedule changed | `group`, `schedule` (`none` outside every window), `mode` |
+| `signal_sample` / `signal_error` | Each poll's performance-counter signal readings; a signal that can't be read (once per error) | `signals[]` with `signal`, `value`, `pressure_percent` / `signal`, `error` |
 | `identity_mismatch` | A process has a pinned name but the wrong path or publisher (once per process) | `process_name/id`, `image_path`, `publisher`, `reason` |
 | `manual_override` / `dashboard_action` | A command or role change from the CLI or dashboard | `command` / `role`, `result`, `confirmed_risk` |
 | `alert`, `self_monitor`, `service_lifecycle`, `dashboard`, `coordination` | Alerts, the service's own footprint, start and stop, dashboard and controller events | |
@@ -370,6 +511,43 @@ python .\tools\log_viewer.py C:\ProgramData\ThreadHaulDaemon\logs\threadhaul.jso
 ```
 
 The log viewer needs `matplotlib`. It prints every state change and renders three charts: critical load against the thresholds, batch states over time, and the service's own footprint.
+
+### Prometheus metrics
+
+Turn on the scrape endpoint in `config.json`:
+
+```json
+"metrics": { "enabled": true, "token": "<16+ characters, or a dpapi: value from protect-secret>" }
+```
+
+It serves `http://127.0.0.1:<dashboard.port>/metrics` in the Prometheus text format. Leave `token` empty to need no token; the endpoint is read-only and loopback-only either way. A Prometheus server or Grafana Alloy agent on the same machine scrapes it like this:
+
+```yaml
+scrape_configs:
+  - job_name: threadhaul
+    static_configs: [{ targets: ["127.0.0.1:8787"] }]
+    authorization: { credentials: "<metrics.token>" }   # omit if no token is set
+```
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `threadhaul_up`, `threadhaul_uptime_seconds` | gauge | Service is answering; seconds since start |
+| `threadhaul_pressure_percent` | gauge | Current critical-process pressure (highest signal) |
+| `threadhaul_threshold_percent{level}` | gauge | Effective `high`, `critical` and `low` thresholds |
+| `threadhaul_threshold_offset_percent` | gauge | How far adaptive thresholds or the controller bias lowered them |
+| `threadhaul_critical_process_cpu_percent{name,pid}` | gauge | CPU of each critical process instance |
+| `threadhaul_batch_processes{state}` | gauge | Managed batch processes that are `normal`, `throttled` or `suspended` |
+| `threadhaul_batch_process_state{name,pid,state,manual_hold}` | gauge | 1 per managed batch process, in its current state |
+| `threadhaul_actions_total{action,trigger}` | counter | State changes since start (`priority_lowered`, `threads_suspended`, `recovered`) by trigger |
+| `threadhaul_log_events_total{log_type}` | counter | Log entries written since start, by type |
+| `threadhaul_schedule_active{group,schedule,mode}` | gauge | 1 for each group's current schedule (only with `schedules`); thresholds are omitted while a schedule is `off` |
+| `threadhaul_group_pressure_percent{group}`, `_threshold_percent{group,level}`, `_active{group}` | gauge | Each policy group's pressure, effective thresholds, and whether its critical processes were sampled (only with `groups`) |
+| `threadhaul_signal_value{signal}`, `_pressure_percent{signal}`, `_up{signal}` | gauge | Each configured signal's reading, its share of the limit, and whether it could be read |
+| `threadhaul_auto_protect_enabled`, `_level{level}`, `_processes` | gauge | Auto-protect on/off, current level, programs lowered |
+| `threadhaul_system_cpu_percent`, `_memory_load_percent`, `_memory_used_bytes`, `_memory_total_bytes`, `_logical_cores` | gauge | Whole-machine figures (memory accurate to about 0.1 GB) |
+| `threadhaul_service_working_set_bytes`, `threadhaul_coordination_connected` | gauge | The service's own memory; 1 when connected to the controller |
+
+Counters restart from zero when the service restarts; Prometheus `rate()` and `increase()` handle that. The endpoint is not exposed on the network. To scrape from another machine, run an agent locally, for example Grafana Alloy or a Prometheus server in agent mode with remote-write.
 
 ### Windows Event Log
 

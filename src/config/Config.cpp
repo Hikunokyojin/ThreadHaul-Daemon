@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 namespace config {
@@ -82,30 +83,85 @@ double Percent(const json& obj, const char* key, const std::string& path) {
     return x;
 }
 
-std::vector<std::wstring> NameList(const json& v, const std::string& path) {
+bool SameName(const std::wstring& a, const std::wstring& b);  // defined below
+
+std::wstring LowerW(std::wstring s) {
+    for (wchar_t& c : s) c = static_cast<wchar_t>(towlower(c));
+    return s;
+}
+
+std::string RuleString(const json& o, const char* key, const std::string& path) {
+    const auto it = o.find(key);
+    if (it == o.end()) return "";
+    if (!it->is_string() || it->get<std::string>().empty()) {
+        throw ConfigError(path + "." + key + " must be a non-empty string");
+    }
+    return it->get<std::string>();
+}
+
+// Process names, as strings or (when `rules` is given) objects with match
+// conditions. Duplicates are merged; a plain string makes the name match
+// every instance, overriding any conditions for it.
+std::vector<std::wstring> NameList(const json& v, const std::string& path,
+                                   std::map<std::wstring, std::vector<DaemonConfig::MatchRule>>* rules = nullptr) {
     if (!v.is_array()) {
         throw ConfigError(path + " must be an array of process names");
     }
     std::vector<std::wstring> names;
+    std::vector<std::wstring> unconditional;
+    auto addName = [&](const std::wstring& n) {
+        for (const auto& e : names) if (SameName(e, n)) return;
+        names.push_back(n);
+    };
     for (size_t i = 0; i < v.size(); ++i) {
         const std::string item = path + "[" + std::to_string(i) + "]";
-        if (!v[i].is_string()) {
-            throw ConfigError(item + " must be a string");
+        std::string name;
+        DaemonConfig::MatchRule rule;
+        const bool isRule = v[i].is_object() && rules != nullptr;
+        if (v[i].is_string()) {
+            name = v[i].get<std::string>();
+        } else if (isRule) {
+            for (const auto& [k, val] : v[i].items()) {
+                (void)val;
+                if (k != "name" && k != "command_line_contains" && k != "user" && k != "service") {
+                    throw ConfigError(item + ": unknown key \"" + k +
+                                      "\" (use name, command_line_contains, user, service)");
+                }
+            }
+            name = RuleString(v[i], "name", item);
+            if (name.empty()) throw ConfigError(item + ".name is required");
+            rule.commandLineContains = Utf8ToWide(RuleString(v[i], "command_line_contains", item));
+            rule.user = Utf8ToWide(RuleString(v[i], "user", item));
+            rule.service = Utf8ToWide(RuleString(v[i], "service", item));
+            if (rule.commandLineContains.empty() && rule.user.empty() && rule.service.empty()) {
+                throw ConfigError(item + " needs command_line_contains, user or service (or use a plain name)");
+            }
+        } else {
+            throw ConfigError(item + (rules ? " must be a name or an object with match conditions"
+                                            : " must be a string"));
         }
-        const std::string name = v[i].get<std::string>();
         if (name.empty()) {
             throw ConfigError(item + " must not be empty");
         }
         if (name.find_first_of("\\/") != std::string::npos) {
             throw ConfigError(item + " must be an executable name such as \"app.exe\", not a path");
         }
-        names.push_back(Utf8ToWide(name));
+        const std::wstring wname = Utf8ToWide(name);
+        addName(wname);
+        if (isRule) {
+            (*rules)[LowerW(wname)].push_back(std::move(rule));
+        } else {
+            unconditional.push_back(LowerW(wname));
+        }
+    }
+    if (rules) {
+        for (const auto& n : unconditional) rules->erase(n);
     }
     return names;
 }
 
-ThresholdSpec Threshold(const json& thresholds, const char* key) {
-    const std::string path = std::string("thresholds.") + key;
+ThresholdSpec Threshold(const json& thresholds, const char* key, const std::string& prefix = "thresholds") {
+    const std::string path = prefix + "." + key;
     const json& t = Object(thresholds, key, path);
     ThresholdSpec spec;
     spec.percent = Percent(t, "percent", path + ".percent");
@@ -183,6 +239,38 @@ bool SameName(const std::wstring& a, const std::wstring& b) {
     return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
 }
 
+// "actions" (top level or inside a group): p is the path prefix for errors.
+// Fields that are absent keep the value already in `ac`.
+void ParseActions(const json& a, const std::string& p, DaemonConfig::ActionsConfig& ac) {
+    if (const json* t = OptObject(a, "throttle", p + ".throttle")) {
+        ac.throttlePriority = OptString(*t, "priority", p + ".throttle.priority", ac.throttlePriority);
+        if (ac.throttlePriority != "idle" && ac.throttlePriority != "below_normal") {
+            throw ConfigError(p + ".throttle.priority must be idle or below_normal");
+        }
+        ac.throttleIoPriority = OptString(*t, "io_priority", p + ".throttle.io_priority", ac.throttleIoPriority);
+        if (ac.throttleIoPriority != "unchanged" && ac.throttleIoPriority != "low" &&
+            ac.throttleIoPriority != "very_low") {
+            throw ConfigError(p + ".throttle.io_priority must be unchanged, low or very_low");
+        }
+        ac.throttleAffinityCores =
+            OptInteger(*t, "affinity_cores", p + ".throttle.affinity_cores", 0, 64, ac.throttleAffinityCores);
+        ac.throttleCpuRatePercent =
+            OptInteger(*t, "cpu_rate_percent", p + ".throttle.cpu_rate_percent", 0, 100, ac.throttleCpuRatePercent);
+    }
+    if (const json* s = OptObject(a, "suspend", p + ".suspend")) {
+        ac.suspendMode = OptString(*s, "mode", p + ".suspend.mode", ac.suspendMode);
+        if (ac.suspendMode != "freeze" && ac.suspendMode != "cpu_rate") {
+            throw ConfigError(p + ".suspend.mode must be freeze or cpu_rate");
+        }
+        ac.suspendCpuRatePercent =
+            OptInteger(*s, "cpu_rate_percent", p + ".suspend.cpu_rate_percent", 1, 100, ac.suspendCpuRatePercent);
+    }
+    if (ac.suspendMode == "cpu_rate" && ac.throttleCpuRatePercent > 0 &&
+        ac.suspendCpuRatePercent >= ac.throttleCpuRatePercent) {
+        throw ConfigError(p + ".suspend.cpu_rate_percent must be below " + p + ".throttle.cpu_rate_percent");
+    }
+}
+
 }
 
 DaemonConfig ParseConfig(const std::string& jsonText) {
@@ -216,8 +304,9 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
 
     const json& processes = Object(root, "processes", "processes");
     cfg.criticalProcesses = NameList(Field(processes, "critical", "processes.critical"),
-                                     "processes.critical");
-    cfg.batchProcesses = NameList(Field(processes, "batch", "processes.batch"), "processes.batch");
+                                     "processes.critical", &cfg.criticalRules);
+    cfg.batchProcesses = NameList(Field(processes, "batch", "processes.batch"), "processes.batch",
+                                  &cfg.batchRules);
     // Empty lists are allowed: the service then monitors nothing until
     // processes are assigned (for example from the dashboard).
     const auto prot = processes.find("protected");
@@ -226,9 +315,12 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
     }
     for (const std::wstring& c : cfg.criticalProcesses) {
         for (const std::wstring& b : cfg.batchProcesses) {
-            if (SameName(c, b)) {
+            // The same name may be in both lists only when both sides tell
+            // instances apart with conditions (critical wins if both match).
+            if (SameName(c, b) && (!cfg.criticalRules.count(LowerW(c)) || !cfg.batchRules.count(LowerW(c)))) {
                 throw ConfigError("\"" + WideToUtf8(c) +
-                                  "\" is listed in both processes.critical and processes.batch");
+                                  "\" is listed in both processes.critical and processes.batch; "
+                                  "that is only allowed when both entries have match conditions");
             }
         }
     }
@@ -368,6 +460,234 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
         cfg.dashboardPort = OptInteger(*d, "port", "dashboard.port", 1024, 65535, 8787);
     }
 
+    if (const auto sig = root.find("signals"); sig != root.end()) {
+        if (!sig->is_array()) throw ConfigError("signals must be an array");
+        if (sig->size() > 16) throw ConfigError("signals: at most 16 signals");
+        for (size_t i = 0; i < sig->size(); ++i) {
+            const std::string where = "signals[" + std::to_string(i) + "]";
+            const json& s = (*sig)[i];
+            if (!s.is_object()) throw ConfigError(where + " must be an object");
+            DaemonConfig::SignalConfig sc;
+            sc.type = OptString(s, "type", where + ".type", "");
+            if (sc.type != "gpu" && sc.type != "disk_queue" && sc.type != "network" && sc.type != "counter") {
+                throw ConfigError(where + ".type must be gpu, disk_queue, network or counter");
+            }
+            sc.name = OptString(s, "name", where + ".name", sc.type == "counter" ? "" : sc.type);
+            if (sc.name.empty() || sc.name.size() > 40 ||
+                sc.name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+                throw ConfigError(where + ".name must be 1-40 characters of a-z, 0-9 and _");
+            }
+            for (const auto& other : cfg.signals) {
+                if (other.name == sc.name) throw ConfigError(where + ".name \"" + sc.name + "\" is used twice");
+            }
+            if (!s.contains("limit")) throw ConfigError(where + ".limit is required");
+            sc.limit = OptNumber(s, "limit", where + ".limit", 1e-9, 1e15, 1.0);
+            sc.aggregate = OptString(s, "aggregate", where + ".aggregate", "sum");
+            if (sc.aggregate != "sum" && sc.aggregate != "max") {
+                throw ConfigError(where + ".aggregate must be sum or max");
+            }
+            sc.instanceContains = Utf8ToWide(OptString(s, "instance_contains", where + ".instance_contains", ""));
+            if (sc.type == "counter") {
+                sc.counter = Utf8ToWide(OptString(s, "counter", where + ".counter", ""));
+                if (sc.counter.size() < 4 || sc.counter[0] != L'\\' || sc.counter.find(L'\\', 1) == std::wstring::npos) {
+                    throw ConfigError(where + ".counter must be a counter path such as \\Processor(_Total)\\% Processor Time");
+                }
+                sc.scale = OptNumber(s, "scale", where + ".scale", 1e-15, 1e15, 1.0);
+            } else if (s.contains("counter") || s.contains("scale")) {
+                throw ConfigError(where + ": counter and scale apply only to type \"counter\"");
+            }
+            cfg.signals.push_back(std::move(sc));
+        }
+    }
+
+    if (const json* a = OptObject(root, "actions", "actions")) {
+        ParseActions(*a, "actions", cfg.actions);
+    }
+
+    // Groups: independent policies, each with its own critical and batch
+    // programs, and optionally its own thresholds and actions (otherwise the
+    // top-level ones). Their names are merged into the role lists so matching
+    // and discovery work as before; criticalGroupOf/batchGroupOf say which
+    // policy a name follows (0 = the top-level "default" group).
+    if (const auto groups = root.find("groups"); groups != root.end()) {
+        if (!groups->is_array()) throw ConfigError("groups must be an array");
+        if (groups->size() > 16) throw ConfigError("groups: at most 16 groups");
+        std::map<std::wstring, std::string> owner;  // lower-case name -> group that uses it
+        for (const auto& n : cfg.criticalProcesses) owner[LowerW(n)] = "default";
+        for (const auto& n : cfg.batchProcesses) owner[LowerW(n)] = "default";
+        for (size_t i = 0; i < groups->size(); ++i) {
+            const std::string where = "groups[" + std::to_string(i) + "]";
+            const json& g = (*groups)[i];
+            if (!g.is_object()) throw ConfigError(where + " must be an object");
+            DaemonConfig::GroupConfig gc;
+            gc.name = OptString(g, "name", where + ".name", "");
+            if (gc.name.empty() || gc.name.size() > 40 || gc.name == "default" ||
+                gc.name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+                throw ConfigError(where + ".name must be 1-40 characters of a-z, 0-9 and _ (not \"default\")");
+            }
+            for (const auto& other : cfg.groups) {
+                if (other.name == gc.name) throw ConfigError(where + ".name \"" + gc.name + "\" is used twice");
+            }
+            std::map<std::wstring, std::vector<DaemonConfig::MatchRule>> critRules, batchRules;
+            gc.critical = NameList(Field(g, "critical", where + ".critical"), where + ".critical", &critRules);
+            gc.batch = NameList(Field(g, "batch", where + ".batch"), where + ".batch", &batchRules);
+            if (gc.critical.empty() || gc.batch.empty()) {
+                throw ConfigError(where + " needs at least one critical and one batch process");
+            }
+            for (const auto& c : gc.critical) {
+                for (const auto& b : gc.batch) {
+                    if (SameName(c, b) && (!critRules.count(LowerW(c)) || !batchRules.count(LowerW(c)))) {
+                        throw ConfigError(where + ": \"" + WideToUtf8(c) +
+                                          "\" is in both critical and batch; that is only allowed when both entries have match conditions");
+                    }
+                }
+            }
+            std::set<std::wstring> mine;
+            for (const auto* list : {&gc.critical, &gc.batch}) {
+                for (const auto& n : *list) {
+                    const std::wstring key = LowerW(n);
+                    const auto it = owner.find(key);
+                    if (it != owner.end() && it->second != gc.name) {
+                        throw ConfigError(where + ": \"" + WideToUtf8(n) + "\" is already used by group \"" +
+                                          it->second + "\"; a program can follow only one policy");
+                    }
+                    mine.insert(key);
+                }
+            }
+            for (const auto& k : mine) owner[k] = gc.name;
+
+            gc.high = cfg.high;
+            gc.critical_ = cfg.critical;
+            gc.low = cfg.low;
+            if (const json* t = OptObject(g, "thresholds", where + ".thresholds")) {
+                if (t->contains("high")) gc.high = Threshold(*t, "high", where + ".thresholds");
+                if (t->contains("critical")) gc.critical_ = Threshold(*t, "critical", where + ".thresholds");
+                if (t->contains("low")) gc.low = Threshold(*t, "low", where + ".thresholds");
+            }
+            if (gc.critical_.percent < gc.high.percent) {
+                throw ConfigError(where + ".thresholds: critical.percent must be at least high.percent");
+            }
+            if (gc.low.percent >= gc.high.percent) {
+                throw ConfigError(where + ".thresholds: low.percent must be below high.percent");
+            }
+            gc.actions = cfg.actions;
+            if (const json* a = OptObject(g, "actions", where + ".actions")) {
+                ParseActions(*a, where + ".actions", gc.actions);
+            }
+
+            const int index = static_cast<int>(cfg.groups.size()) + 1;
+            for (const auto& n : gc.critical) {
+                cfg.criticalProcesses.push_back(n);
+                cfg.criticalGroupOf[LowerW(n)] = index;
+            }
+            for (const auto& n : gc.batch) {
+                cfg.batchProcesses.push_back(n);
+                cfg.batchGroupOf[LowerW(n)] = index;
+            }
+            for (auto& [k, v] : critRules) cfg.criticalRules[k] = std::move(v);
+            for (auto& [k, v] : batchRules) cfg.batchRules[k] = std::move(v);
+            cfg.groups.push_back(std::move(gc));
+        }
+    }
+
+    if (const auto sched = root.find("schedules"); sched != root.end()) {
+        if (!sched->is_array()) throw ConfigError("schedules must be an array");
+        if (sched->size() > 32) throw ConfigError("schedules: at most 32 schedules");
+        auto clock = [](const std::string& s, const std::string& where, bool allow24) {
+            const bool shape = s.size() == 5 && isdigit(static_cast<unsigned char>(s[0])) &&
+                               isdigit(static_cast<unsigned char>(s[1])) && s[2] == ':' &&
+                               isdigit(static_cast<unsigned char>(s[3])) && isdigit(static_cast<unsigned char>(s[4]));
+            const int h = shape ? (s[0] - '0') * 10 + (s[1] - '0') : -1;
+            const int m = shape ? (s[3] - '0') * 10 + (s[4] - '0') : -1;
+            if (!shape || m > 59 || h > 24 || (h == 24 && (m != 0 || !allow24))) {
+                throw ConfigError(where + " must be a time HH:MM (00:00-23:59" + (allow24 ? ", or 24:00)" : ")"));
+            }
+            return h * 60 + m;
+        };
+        for (size_t i = 0; i < sched->size(); ++i) {
+            const std::string where = "schedules[" + std::to_string(i) + "]";
+            const json& s = (*sched)[i];
+            if (!s.is_object()) throw ConfigError(where + " must be an object");
+            DaemonConfig::ScheduleConfig sc;
+            sc.name = OptString(s, "name", where + ".name", "");
+            if (sc.name.empty() || sc.name.size() > 40 ||
+                sc.name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+                throw ConfigError(where + ".name must be 1-40 characters of a-z, 0-9 and _");
+            }
+            for (const auto& other : cfg.schedules) {
+                if (other.name == sc.name) throw ConfigError(where + ".name \"" + sc.name + "\" is used twice");
+            }
+            const std::string group = OptString(s, "group", where + ".group", "default");
+            if (group != "default") {
+                sc.group = -1;
+                for (size_t g = 0; g < cfg.groups.size(); ++g) {
+                    if (cfg.groups[g].name == group) sc.group = static_cast<int>(g) + 1;
+                }
+                if (sc.group < 0) throw ConfigError(where + ".group \"" + group + "\" is not a defined group");
+            }
+            const json& days = Field(s, "days", where + ".days");
+            static const char* kDays[] = {"sun", "mon", "tue", "wed", "thu", "fri", "sat"};
+            if (!days.is_array() || days.empty()) throw ConfigError(where + ".days must be a non-empty array such as [\"mon\",\"tue\"]");
+            for (const auto& d : days) {
+                bool known = false;
+                for (unsigned k = 0; k < 7; ++k) {
+                    if (d.is_string() && d.get<std::string>() == kDays[k]) {
+                        sc.daysMask |= 1u << k;
+                        known = true;
+                    }
+                }
+                if (!known) throw ConfigError(where + ".days: use sun, mon, tue, wed, thu, fri, sat");
+            }
+            sc.fromMinute = clock(OptString(s, "from", where + ".from", ""), where + ".from", false);
+            sc.toMinute = clock(OptString(s, "to", where + ".to", ""), where + ".to", true);
+            if (sc.fromMinute == sc.toMinute) {
+                throw ConfigError(where + ": from and to are the same; use 00:00 to 24:00 for a whole day");
+            }
+            const std::string mode = OptString(s, "mode", where + ".mode", "normal");
+            if (mode != "normal" && mode != "off") throw ConfigError(where + ".mode must be normal or off");
+            sc.off = mode == "off";
+
+            // Start from the group's policy, then apply this window's overrides.
+            const bool top = sc.group == 0;
+            const auto& gp = top ? DaemonConfig::GroupConfig{} : cfg.groups[sc.group - 1];
+            sc.high = top ? cfg.high : gp.high;
+            sc.critical_ = top ? cfg.critical : gp.critical_;
+            sc.low = top ? cfg.low : gp.low;
+            sc.actions = top ? cfg.actions : gp.actions;
+            if (const json* t = OptObject(s, "thresholds", where + ".thresholds")) {
+                if (sc.off) throw ConfigError(where + ": thresholds have no effect with mode \"off\"");
+                if (t->contains("high")) sc.high = Threshold(*t, "high", where + ".thresholds");
+                if (t->contains("critical")) sc.critical_ = Threshold(*t, "critical", where + ".thresholds");
+                if (t->contains("low")) sc.low = Threshold(*t, "low", where + ".thresholds");
+            }
+            if (sc.critical_.percent < sc.high.percent) {
+                throw ConfigError(where + ".thresholds: critical.percent must be at least high.percent");
+            }
+            if (sc.low.percent >= sc.high.percent) {
+                throw ConfigError(where + ".thresholds: low.percent must be below high.percent");
+            }
+            if (const json* a = OptObject(s, "actions", where + ".actions")) {
+                if (sc.off) throw ConfigError(where + ": actions have no effect with mode \"off\"");
+                ParseActions(*a, where + ".actions", sc.actions);
+            }
+            if (!sc.off && !s.contains("thresholds") && !s.contains("actions")) {
+                throw ConfigError(where + " changes nothing: give thresholds, actions or mode \"off\"");
+            }
+            cfg.schedules.push_back(std::move(sc));
+        }
+    }
+
+    if (const json* m = OptObject(root, "metrics", "metrics")) {
+        cfg.metricsEnabled = OptBool(*m, "enabled", "metrics.enabled", false);
+        cfg.metricsToken = Secret(OptString(*m, "token", "metrics.token", ""), "metrics.token");
+        if (!cfg.metricsToken.empty() && cfg.metricsToken.size() < 16) {
+            throw ConfigError("metrics.token must be at least 16 characters (or empty for no token)");
+        }
+        if (cfg.metricsToken.find_first_of(" \t\r\n") != std::string::npos) {
+            throw ConfigError("metrics.token must not contain spaces or line breaks");
+        }
+    }
+
     return cfg;
 }
 
@@ -383,7 +703,7 @@ std::string SetProcessRole(const std::string& jsonText, const std::string& proce
     ordered root;
     try {
         root = ordered::parse(jsonText);
-    } catch (const ordered::parse_error& e) {
+    } catch (const nlohmann::json::exception& e) {  // parse_error and out_of_range (e.g. 1e309)
         throw ConfigError(std::string("config is not valid JSON: ") + e.what());
     }
     if (!root.is_object() || !root.contains("processes") || !root["processes"].is_object()) {
@@ -417,6 +737,26 @@ std::string SetProcessRole(const std::string& jsonText, const std::string& proce
     out += "\n";
     ParseConfig(out);  // throws ConfigError if the result is invalid
     return out;
+}
+
+int ActiveSchedule(const DaemonConfig& cfg, int group, int weekday, int minuteOfDay) {
+    const int yesterday = (weekday + 6) % 7;
+    for (size_t i = 0; i < cfg.schedules.size(); ++i) {
+        const auto& s = cfg.schedules[i];
+        if (s.group != group) continue;
+        const bool today = (s.daysMask >> weekday) & 1u;
+        bool on;
+        if (s.fromMinute < s.toMinute) {
+            on = today && minuteOfDay >= s.fromMinute && minuteOfDay < s.toMinute;
+        } else {
+            // Runs past midnight: the evening part today, or the morning part
+            // of a window that started yesterday.
+            on = (today && minuteOfDay >= s.fromMinute) ||
+                 (((s.daysMask >> yesterday) & 1u) && minuteOfDay < s.toMinute);
+        }
+        if (on) return static_cast<int>(i);
+    }
+    return -1;
 }
 
 DaemonConfig LoadConfigFile(const std::wstring& path) {

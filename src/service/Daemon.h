@@ -19,9 +19,12 @@
 #include "AutoProtect.h"
 #include "EventLogWriter.h"
 #include "JsonLinesLogger.h"
+#include "Metrics.h"
 #include "ProcessIdentity.h"
+#include "ProcessMatch.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
+#include "Signals.h"
 #include "ThresholdTracker.h"
 
 namespace daemon {
@@ -67,6 +70,10 @@ public:
     telemetry::SafetyInfo SafetyOf(const std::string& target);
     std::string ProcessRolesJson();                // lower-cased role lists + managed states
 
+    // ---- Prometheus (/metrics on the dashboard port) ----
+    std::string MetricsText();                     // text exposition format
+    bool MetricsSettings(std::string& token);      // enabled?; token "" = no auth
+
 private:
     void ApplyConfig(const config::DaemonConfig& cfg, bool initial);
     void CheckConfigReload();
@@ -74,6 +81,9 @@ private:
     void Poll();
     void DiscoverBatchProcesses(const std::vector<telemetry::ProcessEntry>& snapshot);
     void LogSelf();
+    // Applies the schedule active now to each group's policy. `force` rebuilds
+    // every group (config load); otherwise only groups whose schedule changed.
+    void UpdateSchedules(bool force);
     std::string StatusJson();
     void Log(const char* type, const nlohmann::ordered_json& fields);
     void OnTransition(const std::wstring& name, DWORD pid, actuator::ProcessState from,
@@ -95,7 +105,19 @@ private:
     std::unique_ptr<CoordinationClient> coordination_;
 
     std::map<std::wstring, std::unique_ptr<telemetry::TrackedProcess>> critical_;
-    telemetry::ThresholdTracker tracker_;
+    // Policy groups: index 0 is the top-level ("default") policy, then one
+    // per entry in config "groups". base_/effective_ mirror group 0.
+    std::vector<telemetry::ThresholdTracker> trackers_;
+    std::vector<actuator::StateMachineConfig> groupBase_;
+    std::vector<actuator::StateMachineConfig> groupEffective_;
+    struct GroupState {
+        double pressure = 0.0;
+        std::string signal = "cpu";
+        DWORD criticalPid = 0;
+        bool active = false;   // had a valid critical sample on the last poll
+    };
+    std::vector<GroupState> groupState_;
+    std::vector<int> activeSchedule_;   // per group: index into cfg_.schedules, -1 = none
     telemetry::AdaptiveThresholds adaptive_;
     telemetry::SelfMonitor self_;
     unsigned cores_ = 1;
@@ -118,6 +140,12 @@ private:
     std::unique_ptr<Dashboard> dashboard_;
     std::unique_ptr<AutoProtector> autoProtect_;
     telemetry::IdentityFilter identity_;
+    telemetry::RoleMatcher matcher_;                  // per-instance critical/batch rules
+    telemetry::SignalSet signals_;                    // poll thread only
+    std::vector<telemetry::SignalReading> lastSignals_;
+    std::set<std::string> signalErrorsLogged_;
+    std::mutex countersMutex_;   // separate from mutex_: bumped from logging paths
+    MetricCounters counters_;
     void OnAutoProtect(const char* event, const AutoProtector::Entry* e, DWORD from, DWORD to,
                        const std::string& detail);
     bool dashboardDirty_ = true;

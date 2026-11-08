@@ -266,6 +266,133 @@ void ProtectedProcessesNeverManaged() {
     Check(mgr.ManagedCount() == 0, __func__, "nothing managed");
 }
 
+void HighestCoresMask() {
+    Check(HighestCores(0xF, 2) == 0xC, __func__, "two highest of four cores");
+    Check(HighestCores(0xA, 1) == 0x8, __func__, "skips cores the process cannot use");
+    Check(HighestCores(0x3, 5) == 0x3, __func__, "asking for more cores than exist keeps them all");
+    Check(HighestCores(0, 3) == 0, __func__, "no cores available");
+}
+
+int Bits(DWORD_PTR v) {
+    int n = 0;
+    for (; v; v &= v - 1) ++n;
+    return n;
+}
+
+// Runs every action against a real child process we started (so we have the
+// rights), checks each with the OS's own query calls, then checks the restore.
+void ActionsOnRealProcess() {
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    wchar_t cmd[] = L"ping -n 60 127.0.0.1";
+    if (!CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        Check(false, __func__, "could not start ping child");
+        return;
+    }
+    DWORD_PTR origMask = 0, sysMask = 0;
+    GetProcessAffinityMask(pi.hProcess, &origMask, &sysMask);
+    ULONG origIo = 99;
+    Check(GetIoPriority(pi.dwProcessId, origIo) && origIo == 2, __func__, "child starts at normal I/O priority");
+
+    StateMachineConfig cfg;
+    cfg.actions.throttlePriority = PriorityLevel::BelowNormal;
+    cfg.actions.throttleIo = IoPriority::VeryLow;
+    cfg.actions.throttleAffinityCores = 1;
+    cfg.actions.throttleCpuRatePercent = 20;
+    cfg.actions.suspendMode = SuspendMode::CpuRate;
+    cfg.actions.suspendCpuRatePercent = 2;
+    Recorder rec;
+    ProcessStateMachine m(L"PING.EXE", pi.dwProcessId, cfg, rec.Callback());
+
+    m.ForceState(ProcessState::Throttled, 0, true);
+    Check(!rec.log.empty() && rec.log.back().actuationSucceeded, __func__, "throttle actions all succeeded");
+    if (!m.LastActionError().empty()) std::printf("      (%s)\n", m.LastActionError().c_str());
+    Check(GetPriorityClass(pi.hProcess) == BELOW_NORMAL_PRIORITY_CLASS, __func__, "priority is Below Normal");
+    ULONG io = 99;
+    Check(GetIoPriority(pi.dwProcessId, io) && io == 0, __func__, "I/O priority is very low");
+    DWORD_PTR mask = 0;
+    GetProcessAffinityMask(pi.hProcess, &mask, &sysMask);
+    Check(Bits(origMask) < 2 || Bits(mask) == 1, __func__, "confined to one core");
+    Check(Bits(origMask) < 2 || (mask & origMask) == mask, __func__, "the core is one it could already use");
+    BOOL inJob = FALSE;
+    Check(IsProcessInJob(pi.hProcess, nullptr, &inJob) && inJob, __func__, "placed in a CPU-rate job");
+
+    m.ForceState(ProcessState::Suspended, 0, true);
+    Check(rec.log.back().actuationSucceeded, __func__, "cpu_rate suspend succeeded");
+    Check(WaitForSingleObject(pi.hProcess, 0) == WAIT_TIMEOUT, __func__, "process keeps running under cpu_rate suspend");
+
+    m.ForceState(ProcessState::Throttled, 0, true);
+    Check(rec.log.back().actuationSucceeded, __func__, "back to throttled from cpu_rate suspend");
+
+    // Change the policy before recovering: restore must still undo what was applied.
+    m.SetConfig(StateMachineConfig{});
+    m.ForceState(ProcessState::Normal, 0, true);
+    Check(rec.log.back().actuationSucceeded, __func__, "restore succeeded");
+    if (!m.LastActionError().empty()) std::printf("      (%s)\n", m.LastActionError().c_str());
+    Check(GetPriorityClass(pi.hProcess) == NORMAL_PRIORITY_CLASS, __func__, "priority restored");
+    Check(GetIoPriority(pi.dwProcessId, io) && io == origIo, __func__, "I/O priority restored");
+    GetProcessAffinityMask(pi.hProcess, &mask, &sysMask);
+    Check(mask == origMask, __func__, "affinity restored exactly");
+
+    // Default policy: freeze and thaw.
+    m.ForceState(ProcessState::Suspended, 0, true);
+    Check(rec.log.back().actuationSucceeded, __func__, "freeze succeeded");
+    m.ForceState(ProcessState::Normal, 0, true);
+    Check(rec.log.back().actuationSucceeded, __func__, "thaw succeeded");
+
+    TerminateProcess(pi.hProcess, 0);
+    WaitForSingleObject(pi.hProcess, 5000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
+void GroupsHaveIndependentPolicies() {
+    StateMachineConfig tight;            // group 0: throttle at 85
+    StateMachineConfig loose;            // group 1: throttle only at 98
+    loose.throttleThresholdPercent = 98;
+    loose.escalateThresholdPercent = 99;
+    loose.recoverThresholdPercent = 50;
+    ActuatorManager mgr(tight);
+    mgr.SetGroupConfigs({tight, loose});
+    mgr.AddBatchProcess(L"a.exe", kFakePid, 0);
+    mgr.AddBatchProcess(L"b.exe", kFakePid + 1, 1);
+    mgr.AddBatchProcess(L"c.exe", kFakePid + 2, 7);  // unknown group -> default policy
+    Check(mgr.GroupOf(kFakePid + 1) == 1 && mgr.GroupOf(kFakePid + 2) == 7, __func__, "group recorded");
+    Check(mgr.Find(kFakePid + 1)->Config().throttleThresholdPercent == 98, __func__, "group policy applied");
+    Check(mgr.Find(kFakePid + 2)->Config().throttleThresholdPercent == 85, __func__, "unknown group uses default policy");
+
+    // Same 90% pressure in both groups: only the tight group throttles.
+    for (int i = 0; i < 3; ++i) mgr.UpdateGroups({90, 90}, {true, true});
+    Check(mgr.Find(kFakePid)->CurrentState() == ProcessState::Throttled, __func__, "group 0 throttles at 90");
+    Check(mgr.Find(kFakePid + 1)->CurrentState() == ProcessState::Normal, __func__, "group 1 ignores 90");
+
+    // Group 1's own pressure, not group 0's, drives it.
+    for (int i = 0; i < 3; ++i) mgr.UpdateGroups({10, 99}, {true, true});
+    Check(mgr.Find(kFakePid + 1)->CurrentState() == ProcessState::Throttled, __func__, "group 1 throttles on its pressure");
+
+    // Inactive group: its machines are not updated (no recovery on a missing sample).
+    for (int i = 0; i < 10; ++i) mgr.UpdateGroups({10, 0}, {true, false});
+    Check(mgr.Find(kFakePid + 1)->CurrentState() == ProcessState::Throttled, __func__, "inactive group untouched");
+    Check(mgr.Find(kFakePid)->CurrentState() == ProcessState::Normal, __func__, "active group recovers");
+
+    StateMachineConfig looser = loose;
+    looser.throttleThresholdPercent = 97;
+    mgr.SetGroupConfigs({tight, looser});
+    Check(mgr.Find(kFakePid + 1)->Config().throttleThresholdPercent == 97, __func__, "SetGroupConfigs re-applies");
+    mgr.SetConfig(loose);
+    Check(mgr.Find(kFakePid)->Config().throttleThresholdPercent == 98 &&
+              mgr.Find(kFakePid + 1)->Config().throttleThresholdPercent == 97,
+          __func__, "SetConfig changes only the default group");
+}
+
+void ActionErrorsAreReported() {
+    StateMachineConfig cfg;
+    cfg.actions.throttleCpuRatePercent = 10;
+    ProcessStateMachine m(L"missing.exe", kFakePid, cfg);
+    m.ForceState(ProcessState::Throttled, 0, true);
+    Check(!m.LastActionError().empty(), __func__, "a failed action names the reason");
+}
+
 }
 
 int main() {
@@ -289,6 +416,10 @@ int main() {
     SetConfigKeepsCounters();
     ManagerSetConfigAndForce();
     ProtectedProcessesNeverManaged();
+    HighestCoresMask();
+    ActionsOnRealProcess();
+    ActionErrorsAreReported();
+    GroupsHaveIndependentPolicies();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

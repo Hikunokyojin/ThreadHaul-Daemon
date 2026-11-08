@@ -5,6 +5,8 @@
 #include <map>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace daemon {
 
@@ -26,6 +28,8 @@ struct HttpResponse {
     int status = 200;
     std::string contentType = "application/json; charset=utf-8";
     std::string body;
+    // Extra response headers (name, value). Values containing CR or LF are dropped.
+    std::vector<std::pair<std::string, std::string>> headers;
 };
 
 // Minimal HTTP/1.1 server for the local dashboard. Listens on 127.0.0.1 only

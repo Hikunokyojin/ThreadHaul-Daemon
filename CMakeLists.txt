@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ThreadHaul
-    VERSION 2.0.0
+    VERSION 2.1.0
     DESCRIPTION "Windows service that keeps latency-critical workloads responsive under CPU pressure"
     LANGUAGES CXX)
 
@@ -34,6 +34,7 @@ endif()
 # Core library: everything except the entry points.
 # --------------------------------------------------------------------------
 add_library(threadhaul_core STATIC
+    src/actuator/Actions.cpp
     src/actuator/ActuatorManager.cpp
     src/actuator/PriorityControl.cpp
     src/actuator/StateMachine.cpp
@@ -42,6 +43,8 @@ add_library(threadhaul_core STATIC
     src/telemetry/CpuMath.cpp
     src/telemetry/ProcessMonitor.cpp
     src/telemetry/ProcessIdentity.cpp
+    src/telemetry/Signals.cpp
+    src/telemetry/ProcessMatch.cpp
     src/telemetry/ProcessSafety.cpp
     src/telemetry/ProcessTable.cpp
     src/config/Config.cpp
@@ -58,12 +61,13 @@ add_library(threadhaul_core STATIC
     src/service/Dashboard.cpp
     src/service/HttpServer.cpp
     src/service/SelfCheck.cpp
+    src/service/Metrics.cpp
     src/common/SecureChannel.cpp
 )
 target_include_directories(threadhaul_core PUBLIC
     src/actuator src/telemetry src/config src/logging src/service src/common third_party)
 target_link_libraries(threadhaul_core PUBLIC
-    advapi32 ws2_32 winhttp wtsapi32 bcrypt crypt32 wintrust user32 shell32)
+    advapi32 ws2_32 winhttp wtsapi32 bcrypt crypt32 wintrust pdh user32 shell32)
 
 # --------------------------------------------------------------------------
 # Executables
@@ -108,7 +112,7 @@ endif()
 # --------------------------------------------------------------------------
 install(TARGETS ThreadHaulDaemon ThreadHaulController RUNTIME DESTINATION bin)
 install(DIRECTORY web/dashboard/ DESTINATION bin/dashboard)
-install(FILES config/config.example.json DESTINATION config)
+install(FILES config/config.example.json config/config.schema.json DESTINATION config)
 install(FILES scripts/install.ps1 scripts/uninstall.ps1 DESTINATION scripts)
 install(TARGETS critical_simulator batch_simulator RUNTIME DESTINATION tools)
 install(FILES tools/log_viewer.py DESTINATION tools)

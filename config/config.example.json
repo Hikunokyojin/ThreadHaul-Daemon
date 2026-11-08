@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/Hikunokyojin/ThreadHaul-Daemon/main/config/config.schema.json",
   "polling": {
     "interval_ms": 1000
   },

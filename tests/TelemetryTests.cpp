@@ -4,6 +4,8 @@
 #include "AdaptiveThresholds.h"
 #include "CpuMath.h"
 #include "ProcessIdentity.h"
+#include "Signals.h"
+#include "ProcessMatch.h"
 #include "ProcessMonitor.h"
 #include "ProcessSafety.h"
 #include "AutoProtectPolicy.h"
@@ -399,6 +401,115 @@ void AutoProtectSelectsHeaviest() {
     Check(SelectAutoTargets(c, 20, 0).empty(), __func__, "no free slots");
 }
 
+void MatchConditions() {
+    using telemetry::MatchCondition;
+    const telemetry::ProcessFacts f{L"\"C:\\Java\\bin\\java.exe\" -jar D:\\jobs\\Nightly-Export.jar --full",
+                                    L"CONTOSO\\svc_batch"};
+    Check(telemetry::ConditionMatches({L"nightly-export.jar", L"", L""}, 10, f, 0), __func__,
+          "command line substring, case-insensitive");
+    Check(!telemetry::ConditionMatches({L"api-server.jar", L"", L""}, 10, f, 0), __func__, "other command line");
+    Check(telemetry::ConditionMatches({L"", L"svc_batch", L""}, 10, f, 0), __func__, "bare user matches any domain");
+    Check(telemetry::ConditionMatches({L"", L"contoso\\SVC_BATCH", L""}, 10, f, 0), __func__, "domain\\user exact");
+    Check(!telemetry::ConditionMatches({L"", L"FABRIKAM\\svc_batch", L""}, 10, f, 0), __func__, "wrong domain");
+    Check(telemetry::ConditionMatches({L"", L"", L"wuauserv"}, 10, f, 10), __func__, "hosts the service");
+    Check(!telemetry::ConditionMatches({L"", L"", L"wuauserv"}, 10, f, 11), __func__, "another process hosts it");
+    Check(!telemetry::ConditionMatches({L"", L"", L"wuauserv"}, 10, f, 0), __func__, "service stopped");
+    Check(!telemetry::ConditionMatches({L"export", L"someone_else", L""}, 10, f, 0), __func__,
+          "all conditions in a rule must hold");
+    Check(!telemetry::ConditionMatches({L"export", L"", L""}, 10, telemetry::ProcessFacts{}, 0), __func__,
+          "unreadable command line never matches");
+}
+
+void MatchesRealProcesses() {
+    const DWORD self = GetCurrentProcessId();
+    const std::wstring cmd = telemetry::ProcessCommandLine(self);
+    Check(cmd.find(L"TelemetryTests") != std::wstring::npos, __func__, "reads own command line");
+    const std::wstring user = telemetry::ProcessUser(self);
+    Check(user.find(L'\\') != std::wstring::npos, __func__, "reads own account as DOMAIN\\user");
+    Check(telemetry::ServiceProcessId(L"EventLog") != 0, __func__, "finds the Event Log service's process");
+    Check(telemetry::ServiceProcessId(L"NoSuchService_ThreadHaul") == 0, __func__, "unknown service is 0");
+
+    const auto snapshot = telemetry::SnapshotProcesses();
+    auto member = [&](std::vector<telemetry::MatchCondition> rules) {
+        telemetry::RoleMatcher m;
+        std::map<std::wstring, std::vector<telemetry::MatchCondition>> r;
+        if (!rules.empty()) r[L"telemetrytests.exe"] = rules;
+        m.Configure(telemetry::Role::Batch, {L"TelemetryTests.exe"}, r);
+        m.BeginPoll(snapshot);
+        return m.Member(telemetry::Role::Batch, self, L"TelemetryTests.exe");
+    };
+    Check(member({}), __func__, "no rules: every instance");
+    Check(member({{L"telemetrytests", L"", L""}}), __func__, "command-line rule matches");
+    Check(!member({{L"definitely-not-in-the-command-line", L"", L""}}), __func__, "non-matching rule");
+    const size_t slash = user.find(L'\\');
+    Check(member({{L"", slash == std::wstring::npos ? user : user.substr(slash + 1), L""}}), __func__,
+          "user rule matches own account");
+    Check(!member({{L"", L"", L"EventLog"}}), __func__, "we do not host the Event Log service");
+    Check(member({{L"nope", L"", L""}, {L"telemetrytests", L"", L""}}), __func__, "rules are alternatives");
+
+    telemetry::RoleMatcher m;
+    m.Configure(telemetry::Role::Critical, {L"TelemetryTests.exe"}, {{L"telemetrytests.exe", {{L"nope", L"", L""}}}});
+    m.BeginPoll(snapshot);
+    const auto crit = m.Filter(snapshot, telemetry::Role::Critical);
+    Check(crit.empty(), __func__, "Filter drops non-matching instances");
+    Check(!m.Member(telemetry::Role::Batch, self, L"TelemetryTests.exe"), __func__, "names are per role");
+}
+
+void SignalCombining() {
+    using telemetry::Aggregate;
+    const std::vector<telemetry::CounterItem> items = {
+        {L"pid_1_luid_0x0_engtype_3D", 30.0}, {L"pid_2_luid_0x0_engtype_3D", 25.0},
+        {L"pid_2_luid_0x0_engtype_Copy", 90.0}};
+    double v = 0;
+    int used = 0;
+    telemetry::CombineInstances(items, Aggregate::Sum, L"engtype_3d", v, used);
+    Check(v == 55.0 && used == 2, __func__, "sum with case-insensitive filter");
+    telemetry::CombineInstances(items, Aggregate::Max, L"", v, used);
+    Check(v == 90.0 && used == 3, __func__, "max over all instances");
+    telemetry::CombineInstances(items, Aggregate::Sum, L"no-such-engine", v, used);
+    Check(v == 0.0 && used == 0, __func__, "filter matching nothing reads 0");
+
+    telemetry::SignalSpec s;
+    Check(telemetry::BuiltInSignal("network", s) && s.scale < 1e-5 && s.counter.find(L"Bytes Total/sec") != std::wstring::npos,
+          __func__, "network built-in converts bytes to MB");
+    Check(telemetry::BuiltInSignal("gpu", s) && s.instanceContains == L"engtype_3D", __func__, "gpu built-in");
+    Check(telemetry::BuiltInSignal("disk_queue", s), __func__, "disk_queue built-in");
+    Check(!telemetry::BuiltInSignal("teleport", s), __func__, "unknown type rejected");
+}
+
+void SignalSetReadsRealCounters() {
+    telemetry::SignalSet set;
+    telemetry::SignalSpec cpu;
+    cpu.name = "cpu_total";
+    cpu.counter = L"\\Processor(_Total)\\% Processor Time";
+    cpu.limit = 100;
+    telemetry::SignalSpec mem;
+    mem.name = "available_mb";
+    mem.counter = L"\\Memory\\Available MBytes";
+    mem.limit = 1024;
+    telemetry::SignalSpec nic;
+    telemetry::BuiltInSignal("network", nic);
+    nic.name = "network";
+    nic.limit = 100;
+    telemetry::SignalSpec bad;
+    bad.name = "missing";
+    bad.counter = L"\\No Such Object\\No Such Counter";
+    set.Configure({cpu, mem, nic, bad});
+    Sleep(250);  // rate counters need time between two collections
+    const auto r = set.Sample();
+    Check(r.size() == 4, __func__, "one reading per signal");
+    if (r.size() != 4) return;
+    // Uncapped processor time can read a hair over 100; percent = 100*v/100 may differ in the last bit.
+    Check(r[0].ok && r[0].value >= 0 && r[0].value <= 101 && std::fabs(r[0].percent - r[0].value) < 1e-9, __func__,
+          "processor time read: " + r[0].error + " value=" + std::to_string(r[0].value));
+    Check(r[1].ok && r[1].value > 0 && std::fabs(r[1].percent - 100.0 * r[1].value / 1024) < 1e-9, __func__,
+          "available memory read and scaled to percent: " + r[1].error);
+    Check(r[2].ok && r[2].value >= 0, __func__, "network built-in reads (sum of interfaces): " + r[2].error);
+    Check(!r[3].ok && !r[3].error.empty(), __func__, "missing counter reports an error instead of failing");
+    set.Configure({});
+    Check(set.Empty(), __func__, "reconfigure to none");
+}
+
 void IdentityRules() {
     using telemetry::ExpectedIdentity;
     using telemetry::ObservedIdentity;
@@ -491,6 +602,10 @@ int main() {
     AutoProtectSelectsHeaviest();
     IdentityRules();
     IdentityFilterOnOwnProcess();
+    SignalCombining();
+    SignalSetReadsRealCounters();
+    MatchConditions();
+    MatchesRealProcesses();
 
     std::printf("%d checks, %d failed\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

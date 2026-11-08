@@ -43,7 +43,7 @@
     const b = $("signout");
     if (!b) return;
     b.addEventListener("click", async () => {
-      try { await api("/api/logout", {}); } catch (e) { /* already signed out */ }
+      try { await api("/api/v1/logout", {}); } catch (e) { /* already signed out */ }
       token = "";
       authFailed = true;
       try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* storage blocked */ }
@@ -111,7 +111,7 @@
       try { msg = (await res.json()).message || ""; } catch (e) { /* no body */ }
       authFailed = true;
       try { sessionStorage.removeItem(TOKEN_KEY); } catch (_) { /* storage blocked */ }
-      if (path !== "/api/logout") showAuth(msg);
+      if (path !== "/api/v1/logout") showAuth(msg);
       throw new Error("unauthorised");
     }
     const data = await res.json();
@@ -140,7 +140,7 @@
 
   async function command(verb, target, confirmed) {
     try {
-      const r = await api("/api/command", { command: verb, target: String(target), confirm: !!confirmed });
+      const r = await api("/api/v1/command", { command: verb, target: String(target), confirm: !!confirmed });
       if (r.needs_confirmation) {
         const ok = await confirmRisk(
           `${verb[0].toUpperCase() + verb.slice(1)} ${SAFETY_PHRASE[r.safety] || "a system process"}?`,
@@ -195,7 +195,7 @@
   async function refreshStatus() {
     let s;
     try {
-      s = await api("/api/status");
+      s = await api("/api/v1/status");
     } catch (e) {
       if (e.message !== "unauthorised") setConn("bad", "Service unreachable");
       return;
@@ -223,10 +223,15 @@
       ? `${s.pressure_signal}${crit ? " · " + crit.name : ""}`
       : "no critical process running";
     const card = $("card-pressure");
-    card.classList.toggle("alert-bad", p >= th.critical);
-    card.classList.toggle("alert-warn", p >= th.high && p < th.critical);
+    // null thresholds = a schedule in mode "off" is active: never throttling.
+    const off = typeof th.high !== "number";
+    card.classList.toggle("alert-bad", !off && p >= th.critical);
+    card.classList.toggle("alert-warn", !off && p >= th.high && p < th.critical);
 
-    $("kpi-thresholds").textContent = `${fmt1(th.high)} / ${fmt1(th.critical)} / ${fmt1(th.low)}`;
+    const sched = (s.schedules || []).find((x) => x.group === "default");
+    $("kpi-thresholds").textContent = off
+      ? `off (schedule${sched ? " " + sched.schedule : ""})`
+      : `${fmt1(th.high)} / ${fmt1(th.critical)} / ${fmt1(th.low)}`;
     $("kpi-thresholds-sub").textContent = s.offset_percent > 0
       ? `lowered ${fmt1(s.offset_percent)} pts (predictive${s.coordination_connected ? " / cluster" : ""})`
       : `samples: ${base.high_samples ?? 3} / ${base.critical_samples ?? 5} / ${base.low_samples ?? 5}`;
@@ -408,7 +413,7 @@
   async function refreshProcesses(force) {
     if (!force && $("proc-pause").checked) return;
     try {
-      const r = await api("/api/processes");
+      const r = await api("/api/v1/processes");
       procs = r.processes || [];
       $("proc-footer").textContent =
         `${r.system.process_count} processes · system CPU ${fmt1(r.system.cpu_percent)}% · ` +
@@ -421,7 +426,7 @@
 
   async function setRole(name, role, confirmed) {
     try {
-      const r = await api("/api/role", { name, role, confirm: !!confirmed });
+      const r = await api("/api/v1/role", { name, role, confirm: !!confirmed });
       if (r.needs_confirmation) {
         const ok = await confirmRisk(
           `Make ${name} a ${role} process?`,
@@ -620,7 +625,7 @@
     if (!$("log-live").checked && logOffset >= 0) return;
     let r;
     try {
-      r = await api("/api/log?offset=" + logOffset);
+      r = await api("/api/v1/log?offset=" + logOffset);
     } catch (e) {
       return;
     }
