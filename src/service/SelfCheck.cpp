@@ -129,6 +129,11 @@ int RunSelfCheck(const std::wstring& configPath) {
     };
     const std::string token = rawString("coordination", "shared_token");
     const std::string hook = rawString("alerts", "webhook_url");
+    const std::string metricsToken = rawString("metrics", "token");
+    if (!metricsToken.empty() && !config::IsProtectedSecret(metricsToken)) {
+        Report("WARN", "Secrets encrypted",
+               "metrics.token is plain text; encrypt it with 'ThreadHaulDaemon.exe protect-secret'");
+    }
     bool plainSecret = false;
     if (!token.empty() && !config::IsProtectedSecret(token)) {
         plainSecret = true;
@@ -161,6 +166,13 @@ int RunSelfCheck(const std::wstring& configPath) {
                    "), per-session key with expiry");
     } else {
         Report("PASS", "Dashboard", "disabled");
+    }
+
+    if (cfg.metricsEnabled) {
+        Report(cfg.metricsToken.empty() ? "INFO" : "PASS", "Metrics endpoint",
+               cfg.metricsToken.empty()
+                   ? "on without a token: any local program can read the metrics (no control, read-only)"
+                   : "on, loopback only, bearer token required");
     }
 
     // 6. Critical processes are pinned to a real identity.

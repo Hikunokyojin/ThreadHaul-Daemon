@@ -44,15 +44,62 @@ bool Contains(const std::vector<std::wstring>& names, const std::wstring& name) 
                        [&](const std::wstring& n) { return SameName(n, name); });
 }
 
-actuator::StateMachineConfig ToStateMachineConfig(const config::DaemonConfig& c) {
+actuator::StateMachineConfig ToPolicy(const config::ThresholdSpec& high, const config::ThresholdSpec& critical,
+                                      const config::ThresholdSpec& low,
+                                      const config::DaemonConfig::ActionsConfig& ca) {
     actuator::StateMachineConfig s;
-    s.throttleThresholdPercent = c.high.percent;
-    s.throttleConsecutiveSamples = c.high.consecutiveSamples;
-    s.escalateThresholdPercent = c.critical.percent;
-    s.escalateConsecutiveSamples = c.critical.consecutiveSamples;
-    s.recoverThresholdPercent = c.low.percent;
-    s.recoverConsecutiveSamples = c.low.consecutiveSamples;
+    s.throttleThresholdPercent = high.percent;
+    s.throttleConsecutiveSamples = high.consecutiveSamples;
+    s.escalateThresholdPercent = critical.percent;
+    s.escalateConsecutiveSamples = critical.consecutiveSamples;
+    s.recoverThresholdPercent = low.percent;
+    s.recoverConsecutiveSamples = low.consecutiveSamples;
+    auto& a = s.actions;
+    a.throttlePriority = ca.throttlePriority == "below_normal" ? actuator::PriorityLevel::BelowNormal
+                                                              : actuator::PriorityLevel::Idle;
+    a.throttleIo = ca.throttleIoPriority == "very_low" ? actuator::IoPriority::VeryLow
+                   : ca.throttleIoPriority == "low"    ? actuator::IoPriority::Low
+                                                       : actuator::IoPriority::Unchanged;
+    a.throttleAffinityCores = ca.throttleAffinityCores;
+    a.throttleCpuRatePercent = ca.throttleCpuRatePercent;
+    a.suspendMode = ca.suspendMode == "cpu_rate" ? actuator::SuspendMode::CpuRate
+                                                 : actuator::SuspendMode::Freeze;
+    a.suspendCpuRatePercent = ca.suspendCpuRatePercent;
     return s;
+}
+
+// Policy per group: index 0 = top level, then one per config group.
+std::vector<actuator::StateMachineConfig> GroupPolicies(const config::DaemonConfig& c) {
+    std::vector<actuator::StateMachineConfig> out{ToPolicy(c.high, c.critical, c.low, c.actions)};
+    for (const auto& g : c.groups) out.push_back(ToPolicy(g.high, g.critical_, g.low, g.actions));
+    return out;
+}
+
+std::wstring LowerName(std::wstring s) {
+    for (wchar_t& ch : s) ch = static_cast<wchar_t>(towlower(ch));
+    return s;
+}
+
+size_t GroupIndex(const std::map<std::wstring, int>& groupOf, const std::wstring& name, size_t count) {
+    const auto it = groupOf.find(LowerName(name));
+    const size_t g = it == groupOf.end() ? 0 : static_cast<size_t>(it->second);
+    return g < count ? g : 0;
+}
+
+// A schedule in mode "off" sets thresholds out of reach; report those as
+// null ("no threshold") rather than a meaningless huge number.
+nlohmann::ordered_json ThresholdJson(double v) {
+    if (v >= 1e8) return nullptr;
+    return static_cast<long long>(v * 10 + (v >= 0 ? 0.5 : -0.5)) / 10.0;
+}
+
+const char* ThresholdTypeName(actuator::ThresholdType t) {
+    switch (t) {
+        case actuator::ThresholdType::High:     return "high";
+        case actuator::ThresholdType::Critical: return "critical";
+        case actuator::ThresholdType::Low:      return "low";
+    }
+    return "unknown";
 }
 
 telemetry::AdaptiveSettings ToAdaptive(const config::DaemonConfig& c) {
@@ -197,15 +244,54 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
             cfg.maxRotatedFiles);
     }
 
-    base_ = ToStateMachineConfig(cfg);
     adaptive_.SetSettings(ToAdaptive(cfg));
-    effective_ = adaptive_.Adjust(base_, coordination_ ? coordination_->ExternalBias() : 0.0);
-    actuator_->SetConfig(effective_);
+    groupBase_ = GroupPolicies(cfg);
+    groupEffective_.clear();
+    const double bias0 = coordination_ ? coordination_->ExternalBias() : 0.0;
+    for (const auto& b : groupBase_) groupEffective_.push_back(adaptive_.Adjust(b, bias0));
+    base_ = groupBase_[0];
+    effective_ = groupEffective_[0];
+    actuator_->SetGroupConfigs(groupEffective_);
+    if (trackers_.size() != groupBase_.size()) trackers_.assign(groupBase_.size(), telemetry::ThresholdTracker{});
+    groupState_.resize(groupBase_.size());
+    UpdateSchedules(true);
     actuator_->SetProtectedProcessNames(cfg.protectedProcesses);
     {
         std::map<std::wstring, telemetry::ExpectedIdentity> pinned;
         for (const auto& p : cfg.identities) pinned[p.name] = {p.path, p.publisher};
         identity_.SetExpected(std::move(pinned));
+    }
+    {
+        auto convert = [](const std::map<std::wstring, std::vector<config::DaemonConfig::MatchRule>>& in) {
+            std::map<std::wstring, std::vector<telemetry::MatchCondition>> out;
+            for (const auto& [name, rules] : in) {
+                for (const auto& r : rules) out[name].push_back({r.commandLineContains, r.user, r.service});
+            }
+            return out;
+        };
+        matcher_.Configure(telemetry::Role::Critical, cfg.criticalProcesses, convert(cfg.criticalRules));
+        matcher_.Configure(telemetry::Role::Batch, cfg.batchProcesses, convert(cfg.batchRules));
+        matcher_.BeginPoll(telemetry::SnapshotProcesses());
+    }
+    {
+        std::vector<telemetry::SignalSpec> specs;
+        for (const auto& sc : cfg.signals) {
+            telemetry::SignalSpec spec;
+            if (sc.type == "counter") {
+                spec.counter = sc.counter;
+                spec.scale = sc.scale;
+            } else {
+                telemetry::BuiltInSignal(sc.type, spec);
+            }
+            spec.name = sc.name;
+            spec.limit = sc.limit;
+            spec.aggregate = sc.aggregate == "max" ? telemetry::Aggregate::Max : telemetry::Aggregate::Sum;
+            if (!sc.instanceContains.empty()) spec.instanceContains = sc.instanceContains;
+            specs.push_back(std::move(spec));
+        }
+        signals_.Configure(specs);
+        lastSignals_.clear();
+        signalErrorsLogged_.clear();
     }
 
     const auto norm = cfg.cpuPerCore ? telemetry::CpuNormalization::PerCore
@@ -258,8 +344,8 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
         for (const auto& [pid, state] : autoProtect_->States()) {
             (void)state;
             for (const auto& e : telemetry::SnapshotProcesses()) {
-                if (e.pid == pid && (Contains(cfg.criticalProcesses, e.name) ||
-                                     Contains(cfg.batchProcesses, e.name) ||
+                if (e.pid == pid && (matcher_.Member(telemetry::Role::Critical, e.pid, e.name) ||
+                                     matcher_.Member(telemetry::Role::Batch, e.pid, e.name) ||
                                      Contains(cfg.protectedProcesses, e.name))) {
                     autoProtect_->Exempt(pid, e.name);
                 }
@@ -352,7 +438,58 @@ void Daemon::Run(HANDLE stopEvent) {
     }
 }
 
+void Daemon::UpdateSchedules(bool force) {
+    const size_t n = groupBase_.size();
+    if (activeSchedule_.size() != n) {
+        activeSchedule_.assign(n, -1);
+        force = true;
+    }
+    if (cfg_.schedules.empty() && !force) return;
+    SYSTEMTIME now;
+    GetLocalTime(&now);
+    const int minute = now.wHour * 60 + now.wMinute;
+    const std::vector<actuator::StateMachineConfig> plain = GroupPolicies(cfg_);
+    const double bias = coordination_ ? coordination_->ExternalBias() : 0.0;
+    bool changed = false;
+    for (size_t g = 0; g < n && g < plain.size(); ++g) {
+        const int idx = config::ActiveSchedule(cfg_, static_cast<int>(g), now.wDayOfWeek, minute);
+        if (!force && idx == activeSchedule_[g]) continue;
+        actuator::StateMachineConfig policy = plain[g];
+        if (idx >= 0) {
+            const auto& s = cfg_.schedules[idx];
+            policy = ToPolicy(s.high, s.critical_, s.low, s.actions);
+            if (s.off) {
+                // Never throttle; anything already throttled recovers after the
+                // usual number of samples, since pressure is always "below".
+                policy.throttleThresholdPercent = 1e9;
+                policy.escalateThresholdPercent = 1e9;
+                policy.recoverThresholdPercent = 1e9;
+            }
+        }
+        if (idx != activeSchedule_[g] || force) {
+            if (idx != activeSchedule_[g] && (!force || idx >= 0)) {
+                Log("schedule_change",
+                    ordered_json{{"group", g == 0 ? std::string("default") : cfg_.groups[g - 1].name},
+                                 {"schedule", idx >= 0 ? cfg_.schedules[idx].name : std::string("none")},
+                                 {"mode", idx >= 0 && cfg_.schedules[idx].off ? "off" : "normal"}});
+            }
+            activeSchedule_[g] = idx;
+            groupBase_[g] = policy;
+            if (g < groupEffective_.size()) groupEffective_[g] = adaptive_.Adjust(policy, bias);
+            if (g < trackers_.size()) trackers_[g].Reset();
+            changed = true;
+        }
+    }
+    if (changed && !groupBase_.empty()) {
+        base_ = groupBase_[0];
+        effective_ = groupEffective_[0];
+        actuator_->SetGroupConfigs(groupEffective_);
+    }
+}
+
 void Daemon::Poll() {
+    UpdateSchedules(false);
+
     // Pinned names that fail their identity check get no role this poll.
     std::vector<telemetry::IdentityFilter::Rejection> impostors;
     const std::vector<telemetry::ProcessEntry> snapshot =
@@ -365,10 +502,22 @@ void Daemon::Poll() {
                                               {"reason", r.reason}});
     }
 
+    // Per-instance role rules: critical tracking and batch discovery each see
+    // only the instances that match; one that matches both is critical.
+    matcher_.BeginPoll(snapshot);
+    const std::vector<telemetry::ProcessEntry> criticalSnapshot =
+        matcher_.Filter(snapshot, telemetry::Role::Critical);
+    std::set<DWORD> criticalPids;
+    for (const auto& e : criticalSnapshot) criticalPids.insert(e.pid);
+    std::vector<telemetry::ProcessEntry> batchSnapshot;
+    for (const auto& e : matcher_.Filter(snapshot, telemetry::Role::Batch)) {
+        if (!criticalPids.count(e.pid)) batchSnapshot.push_back(e);
+    }
+
     std::vector<telemetry::ProcessSample> samples;
     std::vector<telemetry::LifecycleEvent> events;
     for (auto& [name, tracked] : critical_) {
-        tracked->Poll(snapshot, samples, events);
+        tracked->Poll(criticalSnapshot, samples, events);
     }
     for (const telemetry::LifecycleEvent& e : events) {
         ordered_json f{{"role", "critical"},
@@ -382,15 +531,21 @@ void Daemon::Poll() {
         Log("process_lifecycle", f);
     }
 
-    // Combine every critical instance's signals into one pressure value.
+    // Each policy group combines its own critical instances' signals into one
+    // pressure value (group 0 is the top-level policy).
+    const size_t groupCount = std::max<size_t>(groupBase_.size(), 1);
+    std::vector<double> gPressure(groupCount, 0.0);
+    std::vector<std::string> gSignal(groupCount, "cpu");
+    std::vector<DWORD> gPid(groupCount, 0);
+    std::vector<bool> gHasSamples(groupCount, false), gValid(groupCount, false);
     const double memLoad =
         cfg_.memoryTriggerEnabled ? telemetry::SystemMemoryLoadPercent() : 0.0;
-    double pressure = 0.0;
-    std::string signal = "cpu";
-    DWORD pid = 0;
     bool anyValid = false;
     for (const telemetry::ProcessSample& s : samples) {
+        const size_t g = GroupIndex(cfg_.criticalGroupOf, s.name, groupCount);
+        gHasSamples[g] = true;
         if (!s.valid) continue;
+        gValid[g] = true;
         anyValid = true;
         double p = s.cpuPercent;
         std::string sig = "cpu";
@@ -407,39 +562,87 @@ void Daemon::Poll() {
             if (io > p) { p = io; sig = "io"; }
         }
         if (cfg_.logSamples) {
-            Log("sample", ordered_json{{"process_id", s.pid},
-                                       {"cpu_percent", Round1(s.cpuPercent)},
-                                       {"process_name", Narrow(s.name)},
-                                       {"memory_mb", Round1(s.workingSetMb)},
-                                       {"io_mb_per_sec", Round1(s.ioMbPerSec)},
-                                       {"pressure_percent", Round1(p)},
-                                       {"trigger_signal", sig}});
+            ordered_json f{{"process_id", s.pid},
+                           {"cpu_percent", Round1(s.cpuPercent)},
+                           {"process_name", Narrow(s.name)},
+                           {"memory_mb", Round1(s.workingSetMb)},
+                           {"io_mb_per_sec", Round1(s.ioMbPerSec)},
+                           {"pressure_percent", Round1(p)},
+                           {"trigger_signal", sig}};
+            if (!cfg_.groups.empty()) f["group"] = g == 0 ? std::string("default") : cfg_.groups[g - 1].name;
+            Log("sample", f);
         }
-        if (p >= pressure) {
-            pressure = p;
-            signal = sig;
-            pid = s.pid;
+        if (p >= gPressure[g]) {
+            gPressure[g] = p;
+            gSignal[g] = sig;
+            gPid[g] = s.pid;
         }
     }
     lastSamples_ = samples;
 
-    DiscoverBatchProcesses(snapshot);
+    // Performance-counter signals: sampled every poll so rate counters see
+    // even intervals, but they only raise pressure while a critical process runs.
+    if (!signals_.Empty()) {
+        lastSignals_ = signals_.Sample();
+        ordered_json logged = ordered_json::array();
+        for (const telemetry::SignalReading& r : lastSignals_) {
+            if (!r.ok) {
+                if (signalErrorsLogged_.insert(r.name + "|" + r.error).second) {
+                    Log("signal_error", ordered_json{{"signal", r.name}, {"error", r.error}});
+                }
+                continue;
+            }
+            logged.push_back({{"signal", r.name}, {"value", Round1(r.value)}, {"pressure_percent", Round1(r.percent)}});
+            for (size_t g = 0; g < groupCount; ++g) {  // machine-wide: feeds every running group
+                if (gValid[g] && r.percent > gPressure[g]) {
+                    gPressure[g] = r.percent;
+                    gSignal[g] = r.name;
+                }
+            }
+        }
+        if (cfg_.logSamples && anyValid && !logged.empty()) {
+            Log("signal_sample", ordered_json{{"signals", logged}});
+        }
+    }
+
+    DiscoverBatchProcesses(batchSnapshot);
 
     // A critical instance that was only just (re)acquired has no CPU delta
-    // yet; skip the state machines for that one poll rather than feed 0%.
-    if (!samples.empty() && !anyValid) {
+    // yet; skip that group's state machines for one poll rather than feed 0%.
+    // A group whose critical processes are not running has pressure 0 (its
+    // batch processes recover), as before.
+    std::vector<bool> active(groupCount);
+    bool anyActive = false;
+    for (size_t g = 0; g < groupCount; ++g) {
+        active[g] = !(gHasSamples[g] && !gValid[g]);
+        anyActive = anyActive || active[g];
+    }
+    if (!anyActive) {
         return;
     }
-    pressure_ = pressure;
-    pressureSignal_ = signal;
-    criticalPid_ = pid;
+    size_t top = 0;
+    for (size_t g = 0; g < groupCount; ++g) {
+        if (active[g] && (!active[top] || gPressure[g] > gPressure[top])) top = g;
+    }
+    pressure_ = gPressure[top];
+    pressureSignal_ = gSignal[top];
+    criticalPid_ = gPid[top];
+    for (size_t g = 0; g < groupCount && g < groupState_.size(); ++g) {
+        groupState_[g].active = active[g];
+        if (active[g]) groupState_[g] = {gPressure[g], gSignal[g], gPid[g], true};
+    }
+    const double pressure = pressure_;
 
     adaptive_.AddSample(pressure);
     const double bias = coordination_ ? coordination_->ExternalBias() : 0.0;
     const actuator::StateMachineConfig eff = adaptive_.Adjust(base_, bias);
     if (std::abs(eff.throttleThresholdPercent - effective_.throttleThresholdPercent) >= 0.5) {
+        // The adaptive offset and controller bias apply to every group alike.
+        for (size_t g = 0; g < groupBase_.size() && g < groupEffective_.size(); ++g) {
+            groupEffective_[g] = adaptive_.Adjust(groupBase_[g], bias);
+        }
         effective_ = eff;
-        actuator_->SetConfig(effective_);
+        actuator_->SetGroupConfigs(groupEffective_);
         Log("adaptive_threshold",
             ordered_json{{"offset_percent", Round1(base_.throttleThresholdPercent - eff.throttleThresholdPercent)},
                          {"slope_percent_per_sample", Round1(adaptive_.Slope())},
@@ -450,9 +653,25 @@ void Daemon::Poll() {
                          {"low_percent", Round1(eff.recoverThresholdPercent)}});
     }
 
-    for (const auto& fired : tracker_.Add(pressure, effective_)) {
-        if (logger_) {
-            logger_->LogThresholdEvent(pid, fired.type, fired.consecutiveSamples, Round1(pressure));
+    for (size_t g = 0; g < groupCount && g < trackers_.size() && g < groupEffective_.size(); ++g) {
+        if (!active[g]) continue;
+        for (const auto& fired : trackers_[g].Add(gPressure[g], groupEffective_[g])) {
+            {
+                std::lock_guard<std::mutex> lock(countersMutex_);
+                counters_.logEvents["threshold_event"]++;
+            }
+            if (g == 0 && cfg_.groups.empty()) {
+                if (logger_) {
+                    logger_->LogThresholdEvent(gPid[g], fired.type, fired.consecutiveSamples, Round1(gPressure[g]));
+                }
+            } else if (logger_) {
+                logger_->LogEvent("threshold_event",
+                                  ordered_json{{"process_id", gPid[g]},
+                                               {"threshold", ThresholdTypeName(fired.type)},
+                                               {"consecutive_samples", fired.consecutiveSamples},
+                                               {"cpu_percent", Round1(gPressure[g])},
+                                               {"group", g == 0 ? std::string("default") : cfg_.groups[g - 1].name}});
+            }
         }
     }
 
@@ -466,8 +685,9 @@ void Daemon::Poll() {
                                                   {"state", logging::StateName(m.CurrentState())}});
         }
     });
-    if (actuator_->UpdateAll(pressure)) {
-        tracker_.Reset();
+    const std::vector<bool> changed = actuator_->UpdateGroups(gPressure, active);
+    for (size_t g = 0; g < changed.size() && g < trackers_.size(); ++g) {
+        if (changed[g]) trackers_[g].Reset();
     }
     for (auto it = adhoc_.begin(); it != adhoc_.end();) {
         it = actuator_->Find(*it) == nullptr ? adhoc_.erase(it) : std::next(it);
@@ -475,7 +695,8 @@ void Daemon::Poll() {
 
     if (autoProtect_) {
         autoProtect_->Tick([this](const std::wstring& name, DWORD pid) {
-            return Contains(cfg_.criticalProcesses, name) || Contains(cfg_.batchProcesses, name) ||
+            return matcher_.Member(telemetry::Role::Critical, pid, name) ||
+                   matcher_.Member(telemetry::Role::Batch, pid, name) ||
                    Contains(cfg_.protectedProcesses, name) || actuator_->Find(pid) != nullptr;
         });
     }
@@ -490,7 +711,8 @@ void Daemon::DiscoverBatchProcesses(const std::vector<telemetry::ProcessEntry>& 
     for (const std::wstring& name : cfg_.batchProcesses) {
         for (DWORD pid : telemetry::FindByName(snapshot, name)) {
             if (actuator_->Find(pid) != nullptr) continue;
-            if (actuator_->AddBatchProcess(name, pid)) {
+            const int group = static_cast<int>(GroupIndex(cfg_.batchGroupOf, name, groupBase_.size()));
+            if (actuator_->AddBatchProcess(name, pid, group)) {
                 Log("process_lifecycle", ordered_json{{"role", "batch"},
                                                       {"event", "acquired"},
                                                       {"process_name", Narrow(name)},
@@ -519,6 +741,10 @@ void Daemon::LogSelf() {
 }
 
 void Daemon::Log(const char* type, const ordered_json& fields) {
+    {
+        std::lock_guard<std::mutex> lock(countersMutex_);
+        counters_.logEvents[type]++;
+    }
     if (logger_) {
         logger_->LogEvent(type, fields);
     }
@@ -526,8 +752,22 @@ void Daemon::Log(const char* type, const ordered_json& fields) {
 
 void Daemon::OnTransition(const std::wstring& name, DWORD pid, actuator::ProcessState from,
                           actuator::ProcessState to, double cpu, bool ok) {
+    {
+        std::lock_guard<std::mutex> lock(countersMutex_);
+        counters_.logEvents["actuator_action"]++;
+        counters_.actions[{logging::ActionName(to), std::string(trigger_)}]++;
+    }
     if (logger_) {
         logger_->LogActuatorAction(pid, name, criticalPid_, from, to, Round1(cpu), ok, trigger_);
+    }
+    if (!ok) {
+        const actuator::ProcessStateMachine* m = actuator_ ? actuator_->Find(pid) : nullptr;
+        if (m && !m->LastActionError().empty()) {
+            Log("action_error", ordered_json{{"batch_process_id", pid},
+                                             {"batch_process_name", Narrow(name)},
+                                             {"to_state", logging::StateName(to)},
+                                             {"error", m->LastActionError()}});
+        }
     }
     eventLog_.ReportActuatorAction(pid, name, criticalPid_, from, to, cpu, ok);
 
@@ -568,9 +808,9 @@ std::string Daemon::StatusJson() {
     j["pressure_signal"] = pressureSignal_;
     j["critical_process_id"] = criticalPid_;
     j["offset_percent"] = Round1(base_.throttleThresholdPercent - effective_.throttleThresholdPercent);
-    j["thresholds"] = {{"high", Round1(effective_.throttleThresholdPercent)},
-                       {"critical", Round1(effective_.escalateThresholdPercent)},
-                       {"low", Round1(effective_.recoverThresholdPercent)}};
+    j["thresholds"] = {{"high", ThresholdJson(effective_.throttleThresholdPercent)},
+                       {"critical", ThresholdJson(effective_.escalateThresholdPercent)},
+                       {"low", ThresholdJson(effective_.recoverThresholdPercent)}};
     j["coordination_connected"] = coordination_ && coordination_->Connected();
     ordered_json crit = ordered_json::array();
     for (const telemetry::ProcessSample& s : lastSamples_) {
@@ -579,12 +819,58 @@ std::string Daemon::StatusJson() {
     j["critical"] = crit;
     ordered_json batch = ordered_json::array();
     actuator_->ForEach([&](const actuator::ProcessStateMachine& m) {
-        batch.push_back({{"name", Narrow(m.BatchProcessName())},
-                         {"pid", m.BatchProcessId()},
-                         {"state", logging::StateName(m.CurrentState())},
-                         {"manual_hold", m.IsManuallyHeld()}});
+        ordered_json b{{"name", Narrow(m.BatchProcessName())},
+                       {"pid", m.BatchProcessId()},
+                       {"state", logging::StateName(m.CurrentState())},
+                       {"manual_hold", m.IsManuallyHeld()}};
+        if (!m.LastActionError().empty()) b["action_error"] = m.LastActionError();
+        if (!cfg_.groups.empty()) {
+            const int g = actuator_->GroupOf(m.BatchProcessId());
+            b["group"] = g <= 0 || static_cast<size_t>(g) > cfg_.groups.size() ? std::string("default")
+                                                                               : cfg_.groups[g - 1].name;
+        }
+        batch.push_back(b);
     });
     j["batch"] = batch;
+    ordered_json sig = ordered_json::array();
+    for (const telemetry::SignalReading& r : lastSignals_) {
+        ordered_json e{{"name", r.name}, {"ok", r.ok}};
+        if (r.ok) {
+            e["value"] = Round1(r.value);
+            e["pressure_percent"] = Round1(r.percent);
+            e["instances"] = r.instances;
+        } else {
+            e["error"] = r.error;
+        }
+        sig.push_back(e);
+    }
+    j["signals"] = sig;
+    if (!cfg_.groups.empty()) {
+        ordered_json groups = ordered_json::array();
+        for (size_t g = 0; g < groupEffective_.size() && g < groupState_.size(); ++g) {
+            const auto& st = groupState_[g];
+            const auto& eff = groupEffective_[g];
+            groups.push_back({{"name", g == 0 ? std::string("default") : cfg_.groups[g - 1].name},
+                              {"active", st.active},
+                              {"pressure_percent", Round1(st.pressure)},
+                              {"pressure_signal", st.signal},
+                              {"critical_process_id", st.criticalPid},
+                              {"thresholds", {{"high", ThresholdJson(eff.throttleThresholdPercent)},
+                                              {"critical", ThresholdJson(eff.escalateThresholdPercent)},
+                                              {"low", ThresholdJson(eff.recoverThresholdPercent)}}}});
+        }
+        j["groups"] = groups;
+    }
+    if (!cfg_.schedules.empty()) {
+        ordered_json active = ordered_json::array();
+        for (size_t g = 0; g < activeSchedule_.size(); ++g) {
+            const int idx = activeSchedule_[g];
+            active.push_back({{"group", g == 0 ? std::string("default") : cfg_.groups[g - 1].name},
+                              {"schedule", idx >= 0 ? cfg_.schedules[idx].name : std::string("none")},
+                              {"mode", idx >= 0 && cfg_.schedules[idx].off ? "off" : "normal"}});
+        }
+        j["schedules"] = active;
+    }
     return j.dump();
 }
 
@@ -652,6 +938,22 @@ std::string Daemon::DashboardInfo() {
         .dump();
 }
 
+std::string Daemon::MetricsText() {
+    const nlohmann::json status = nlohmann::json::parse(DashboardStatus(), nullptr, false);
+    MetricCounters snapshot;
+    {
+        std::lock_guard<std::mutex> lock(countersMutex_);
+        snapshot = counters_;
+    }
+    return PrometheusText(status.is_discarded() ? nlohmann::json::object() : status, snapshot);
+}
+
+bool Daemon::MetricsSettings(std::string& token) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    token = cfg_.metricsToken;
+    return cfg_.metricsEnabled;
+}
+
 std::string Daemon::DashboardStatus() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     ordered_json j = ordered_json::parse(StatusJson());
@@ -672,9 +974,9 @@ std::string Daemon::DashboardStatus() {
     }
     j["service"] = svc;
 
-    j["base_thresholds"] = {{"high", base_.throttleThresholdPercent},
-                            {"critical", base_.escalateThresholdPercent},
-                            {"low", base_.recoverThresholdPercent},
+    j["base_thresholds"] = {{"high", ThresholdJson(base_.throttleThresholdPercent)},
+                            {"critical", ThresholdJson(base_.escalateThresholdPercent)},
+                            {"low", ThresholdJson(base_.recoverThresholdPercent)},
                             {"high_samples", base_.throttleConsecutiveSamples},
                             {"critical_samples", base_.escalateConsecutiveSamples},
                             {"low_samples", base_.recoverConsecutiveSamples}};
@@ -966,12 +1268,13 @@ std::string Daemon::HandleCommand(const std::string& line) {
         std::string outcome;
         bool ok = true;
         actuator::ProcessStateMachine* m = actuator_->Find(e.pid);
-        if (Contains(cfg_.criticalProcesses, e.name)) {
+        if (matcher_.Member(telemetry::Role::Critical, e.pid, e.name)) {
             ok = false;
             outcome = "refused: configured as a critical process";
         } else if (verb == "throttle" || verb == "suspend") {
             if (m == nullptr) {
-                if (!actuator_->AddBatchProcess(e.name, e.pid)) {
+                if (!actuator_->AddBatchProcess(
+                        e.name, e.pid, static_cast<int>(GroupIndex(cfg_.batchGroupOf, e.name, groupBase_.size())))) {
                     ok = false;
                     outcome = "refused: process is on the protection list";
                 } else {

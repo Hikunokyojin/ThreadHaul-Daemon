@@ -41,6 +41,8 @@ public:
 
 private:
     HttpResponse Handle(const HttpRequest& req);
+    // One API route, e.g. "/status", after the version prefix is removed.
+    HttpResponse Api(const HttpRequest& req, const std::string& route);
     HttpResponse ServeFile(const std::string& path);
     HttpResponse Processes();
     bool Authorized(const HttpRequest& req, HttpResponse& res) const;

@@ -4,6 +4,8 @@
 #include <string>
 #include <functional>
 
+#include "Actions.h"
+
 namespace actuator {
 
 enum class ProcessState {
@@ -29,6 +31,9 @@ struct StateMachineConfig {
 
     double   recoverThresholdPercent = 60.0;
     int      recoverConsecutiveSamples = 5;
+
+    // What throttle and suspend do (defaults: Idle priority, freeze threads).
+    ActionPolicy actions;
 };
 using TransitionCallback = std::function<void(
     const std::wstring& batchProcessName,
@@ -74,6 +79,9 @@ public:
     const std::wstring& BatchProcessName() const { return batchProcessName_; }
     DWORD BatchProcessId() const { return batchProcessId_; }
 
+    // Why the last transition's actions failed ("" if they all succeeded).
+    const std::string& LastActionError() const { return lastActionError_; }
+
 private:
     void TransitionTo(ProcessState newState, double cpuPercent);
 
@@ -82,6 +90,8 @@ private:
     HANDLE       processHandle_ = nullptr;
     StateMachineConfig config_;
     TransitionCallback onTransition_;
+    ProcessActions actions_;
+    std::string lastActionError_;
 
     ProcessState state_ = ProcessState::Normal;
     bool manualHold_ = false;

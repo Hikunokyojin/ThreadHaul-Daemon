@@ -11,7 +11,8 @@ ProcessStateMachine::ProcessStateMachine(std::wstring batchProcessName,
     : batchProcessName_(std::move(batchProcessName))
     , batchProcessId_(batchProcessId)
     , config_(config)
-    , onTransition_(std::move(onTransition)) {
+    , onTransition_(std::move(onTransition))
+    , actions_(batchProcessId) {
     processHandle_ = OpenProcess(SYNCHRONIZE, FALSE, batchProcessId_);
 }
 
@@ -74,38 +75,28 @@ void ProcessStateMachine::TransitionTo(ProcessState newState, double cpuPercent)
     const ProcessState oldState = state_;
 
     bool actuationSucceeded = true;
+    lastActionError_.clear();
 
     if (HasExited()) {
         actuationSucceeded = false;
+        lastActionError_ = "process has exited";
     } else {
         switch (newState) {
-            case ProcessState::Throttled: {
+            case ProcessState::Throttled:
                 // Suspended -> Throttled only happens through a manual override.
-                bool resumed = true;
-                if (oldState == ProcessState::Suspended) {
-                    resumed = ResumeAllThreads(batchProcessId_).AllSucceeded();
-                }
-                actuationSucceeded =
-                    resumed && SetProcessPriority(batchProcessId_, PriorityLevel::Idle) ==
-                                   PriorityChangeResult::Success;
+                actuationSucceeded = oldState == ProcessState::Suspended
+                                         ? actions_.Unsuspend(config_.actions, lastActionError_)
+                                         : actions_.Throttle(config_.actions, lastActionError_);
                 break;
-            }
 
             case ProcessState::Suspended:
-                actuationSucceeded = SuspendAllThreads(batchProcessId_).AllSucceeded();
+                actuationSucceeded = actions_.Suspend(config_.actions, lastActionError_);
                 break;
 
-            case ProcessState::Normal: {
-                bool resumed = true;
-                if (oldState == ProcessState::Suspended) {
-                    resumed = ResumeAllThreads(batchProcessId_).AllSucceeded();
-                }
-                const bool restored =
-                    SetProcessPriority(batchProcessId_, PriorityLevel::Normal) ==
-                    PriorityChangeResult::Success;
-                actuationSucceeded = resumed && restored;
+            case ProcessState::Normal:
+                // Undoes exactly what was applied, even if the policy changed since.
+                actuationSucceeded = actions_.Restore(lastActionError_);
                 break;
-            }
         }
     }
 
