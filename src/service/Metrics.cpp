@@ -155,10 +155,10 @@ std::string PrometheusText(const json& status, const MetricCounters& counters) {
         }
         w.Family("threadhaul_group_threshold_percent", "gauge", "Effective thresholds of each policy group.");
         for (const json& g : groups) {
-            const json th = g.value("thresholds", json::object());
+            const json groupTh = g.value("thresholds", json::object());
             for (const char* level : {"high", "critical", "low"}) {
                 double v;
-                if (Num(th, level, v)) {
+                if (Num(groupTh, level, v)) {
                     w.Sample("threadhaul_group_threshold_percent",
                              Label("group", g.value("name", "")) + "," + Label("level", level), v);
                 }

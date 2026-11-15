@@ -292,7 +292,9 @@ void ActionsOnRealProcess() {
     DWORD_PTR origMask = 0, sysMask = 0;
     GetProcessAffinityMask(pi.hProcess, &origMask, &sysMask);
     ULONG origIo = 99;
-    Check(GetIoPriority(pi.dwProcessId, origIo) && origIo == 2, __func__, "child starts at normal I/O priority");
+    // The child inherits our I/O priority; CI runners run below normal, so
+    // record the start value (it must be readable) and require an exact restore.
+    Check(GetIoPriority(pi.dwProcessId, origIo) && origIo <= 2, __func__, "child's I/O priority can be read");
 
     StateMachineConfig cfg;
     cfg.actions.throttlePriority = PriorityLevel::BelowNormal;
