@@ -197,7 +197,15 @@ cmake --install out\build --config Release --prefix out\package   # release layo
 
 ## Installation
 
-**MSI installer (recommended).** Download `ThreadHaul-<version>-win-x64.msi` from the [latest release](https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases/latest) and run it, or install silently:
+**winget.** Once the package is listed:
+
+```powershell
+winget install Hikunokyojin.ThreadHaul
+```
+
+`winget upgrade Hikunokyojin.ThreadHaul` installs newer releases and keeps your configuration. Maintainers generate the manifests for a release with `scripts\winget-manifest.ps1 -Version <x.y.z>`. The script checks the MSI against the release's SHA-256 file and runs `winget validate`.
+
+**MSI installer.** Download `ThreadHaul-<version>-win-x64.msi` from the [latest release](https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases/latest) and run it, or install silently:
 
 ```powershell
 msiexec /i ThreadHaul-2.2.0-win-x64.msi /qn
