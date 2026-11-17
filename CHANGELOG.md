@@ -106,7 +106,8 @@ First public release.
   - a log-graphing script.
 - **Builds:** CMake and `build.cmd`, with 231 unit-test checks, GitHub Actions CI and release packaging.
 
-[Unreleased]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases/tag/v1.0.0
