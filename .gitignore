@@ -22,3 +22,6 @@ CMakeUserPresets.json
 
 # Local, non-repository material
 specs/
+
+# WiX extension cache (scripts\build-msi.ps1)
+.wix/

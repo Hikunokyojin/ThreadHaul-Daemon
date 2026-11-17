@@ -197,7 +197,21 @@ cmake --install out\build --config Release --prefix out\package   # release layo
 
 ## Installation
 
-From an **Administrator PowerShell**, in the repository (after building) or in an extracted release:
+**MSI installer (recommended).** Download `ThreadHaul-<version>-win-x64.msi` from the [latest release](https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases/latest) and run it, or install silently:
+
+```powershell
+msiexec /i ThreadHaul-2.2.0-win-x64.msi /qn
+```
+
+The MSI sets up the same things as `install.ps1`:
+- **Programs and service.** It installs to `C:\Program Files\ThreadHaulDaemon` (added to the system `PATH`) and creates the `ThreadHaulDaemon` service: automatic start, restart on failure, and only `SeDebugPrivilege` and `SeChangeNotifyPrivilege`.
+- **Configuration.** It creates `C:\ProgramData\ThreadHaulDaemon\config.json` from the example only if none exists, and locks it and the logs to SYSTEM and Administrators. It also registers the Event Log source and starts the service.
+- **Upgrades.** Installing a newer MSI keeps your configuration.
+- **Uninstalling** (Settings → Apps, or `msiexec /x`) stops the service, which restores every managed process, then removes it. Your configuration and logs are kept.
+
+To build the MSI yourself, run `build.cmd`, then `powershell -ExecutionPolicy Bypass -File .\scripts\build-msi.ps1`. It uses the WiX toolset pinned in `dotnet-tools.json`, so it needs the .NET SDK.
+
+**Install script.** From an **Administrator PowerShell**, in the repository (after building) or in an extracted release zip:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
@@ -680,6 +694,21 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 - **Priority classes are coarse.** On machines with many idle cores, a throttled program may not visibly slow down, because there is capacity for everyone. That is the intended behaviour.
 - **Controller traffic is not encrypted.**
 - **Builds are not code-signed.**
+
+## Code signing
+
+**Policy.** Release binaries and the MSI are code-signed through [SignPath.io](https://signpath.io), with a certificate provided by the [SignPath Foundation](https://signpath.org) for open-source projects. Signing follows these rules:
+- Only builds produced by this repository's [release workflow](.github/workflows/release.yml), from a version tag on `main`, are submitted for signing. Nothing built on a personal machine is ever signed.
+- Committer and reviewer: the repository owner. Signing approver: the repository owner.
+- Signed files are `ThreadHaulDaemon.exe`, `ThreadHaulController.exe` and the `.msi`. They contain only code from this repository and its declared third-party dependencies (see [License](#license)).
+- Privacy: ThreadHaul sends no data anywhere unless you configure it to, through the controller link, the alert webhook or the metrics endpoint.
+
+Until signing is approved, releases are published unsigned and say so in their release notes. Windows SmartScreen may then warn on first run.
+
+**Maintainer setup.** Once the SignPath project is approved:
+1. In SignPath, create two artifact configurations in the project. Name them `executables` (a zip file containing `*.exe` PE files) and `msi` (an MSI file). Use one signing policy, for example `release-signing`, linked to the GitHub trusted build system.
+2. In the GitHub repository settings, add the secret `SIGNPATH_API_TOKEN`. Add the variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG` and `SIGNPATH_POLICY_SLUG`.
+3. Push a version tag. The release workflow signs the executables, builds the MSI from them, signs the MSI, checks every signature, and publishes.
 
 ## Contributing
 

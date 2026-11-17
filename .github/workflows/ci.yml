@@ -39,6 +39,14 @@ jobs:
         shell: cmd
         run: build.cmd test
 
+      - name: Build and validate the MSI
+        shell: powershell
+        run: |
+          .\scripts\build-msi.ps1 -OutDir out\msi
+          $msi = Get-ChildItem out\msi\*.msi | Select-Object -First 1
+          dotnet tool run wix -- msi validate $msi.FullName
+          if ($LASTEXITCODE -ne 0) { throw "MSI validation failed ($LASTEXITCODE)" }
+
   analyze:
     name: Static analysis (MSVC /analyze)
     runs-on: windows-latest
