@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ThreadHaul MSI (WiX 5). Build with scripts\build-msi.ps1, which passes:
+    BinDir   folder with ThreadHaulDaemon.exe, ThreadHaulController.exe and dashboard\
+    RepoDir  repository root (config templates, README, LICENSE)
+    Version  product version, e.g. 2.2.0
+  Mirrors scripts\install.ps1: same folders, service settings, privileges and ACLs.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package Name="ThreadHaul"
+           Manufacturer="ThreadHaul contributors"
+           Version="$(Version)"
+           UpgradeCode="{6B3F0E2A-5C1D-4E8B-9A7F-3D2C1B0A9E84}"
+           Scope="perMachine"
+           Compressed="yes">
+    <SummaryInformation Description="ThreadHaul: keeps latency-critical Windows workloads responsive under CPU pressure" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ThreadHaul is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Launch Condition="VersionNT64" Message="ThreadHaul requires 64-bit Windows." />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Hikunokyojin/ThreadHaul-Daemon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Hikunokyojin/ThreadHaul-Daemon/issues" />
+    <Property Id="ARPCOMMENTS" Value="Windows service that keeps latency-critical workloads responsive under CPU pressure." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ThreadHaulDaemon">
+        <Directory Id="DashboardDir" Name="dashboard" />
+        <Directory Id="TemplatesDir" Name="config" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATADIR" Name="ThreadHaulDaemon">
+        <Directory Id="LOGDIR" Name="logs" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="ThreadHaul" Level="1">
+      <ComponentGroupRef Id="Service" />
+      <ComponentGroupRef Id="Tools" />
+      <ComponentGroupRef Id="Dashboard" />
+      <ComponentGroupRef Id="Templates" />
+      <ComponentGroupRef Id="Data" />
+    </Feature>
+
+    <!-- Lock the config and logs to SYSTEM and Administrators, as install.ps1
+         does (inheritance removed so ordinary users get nothing). The service
+         runs as LocalSystem (S-1-5-18). Runs elevated, after files are laid down. -->
+    <CustomAction Id="LockConfigAcl" Directory="DATADIR" Execute="deferred" Impersonate="no" Return="check"
+                  ExeCommand="&quot;[System64Folder]icacls.exe&quot; &quot;[DATADIR]config.json&quot; /inheritance:r /grant:r *S-1-5-18:(F) *S-1-5-32-544:(F)" />
+    <CustomAction Id="LockLogAcl" Directory="DATADIR" Execute="deferred" Impersonate="no" Return="check"
+                  ExeCommand="&quot;[System64Folder]icacls.exe&quot; &quot;[LOGDIR].&quot; /inheritance:r /grant:r *S-1-5-18:(OI)(CI)(F) *S-1-5-32-544:(OI)(CI)(F)" />
+    <!-- Only the privileges the service needs, and its own service SID. The
+         MSI ServiceConfig table is documented as unreliable, so this uses
+         sc.exe exactly as install.ps1 does, before the service starts. -->
+    <CustomAction Id="SetServicePrivileges" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="check"
+                  ExeCommand="&quot;[System64Folder]sc.exe&quot; privs ThreadHaulDaemon SeDebugPrivilege/SeChangeNotifyPrivilege" />
+    <CustomAction Id="SetServiceSid" Directory="INSTALLFOLDER" Execute="deferred" Impersonate="no" Return="check"
+                  ExeCommand="&quot;[System64Folder]sc.exe&quot; sidtype ThreadHaulDaemon unrestricted" />
+    <InstallExecuteSequence>
+      <Custom Action="LockConfigAcl" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="LockLogAcl" After="LockConfigAcl" Condition="NOT REMOVE" />
+      <Custom Action="SetServicePrivileges" After="InstallServices" Condition="NOT REMOVE" />
+      <Custom Action="SetServiceSid" After="SetServicePrivileges" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="Service" Directory="INSTALLFOLDER">
+      <Component Id="DaemonExe" Bitness="always64">
+        <File Id="ThreadHaulDaemonExe" Source="$(BinDir)\ThreadHaulDaemon.exe" KeyPath="yes" />
+        <ServiceInstall Id="ThreadHaulService"
+                        Name="ThreadHaulDaemon"
+                        DisplayName="ThreadHaul Resource Monitor"
+                        Description="Protects critical processes from CPU starvation by throttling and suspending batch processes."
+                        Start="auto" Type="ownProcess" ErrorControl="normal" Account="LocalSystem"
+                        Arguments="--config &quot;[DATADIR]config.json&quot;" Vital="yes">
+          <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart"
+                              ThirdFailureActionType="restart" RestartServiceDelayInSeconds="5"
+                              ResetPeriodInDays="1" />
+        </ServiceInstall>
+        <!-- Stopping the service restores every managed process before it exits. -->
+        <ServiceControl Id="ThreadHaulServiceControl" Name="ThreadHaulDaemon"
+                        Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+        <util:EventSource Name="ThreadHaulDaemon" Log="Application"
+                          EventMessageFile="[WindowsFolder]Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll" />
+      </Component>
+      <Component Id="PathEntry" Bitness="always64" Guid="{0E8C4B1F-7A2D-4C6E-9B3A-5F1D2E8C7A40}">
+        <Environment Id="ThreadHaulPath" Name="PATH" Value="[INSTALLFOLDER]" Permanent="no"
+                     Part="last" Action="set" System="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Tools" Directory="INSTALLFOLDER">
+      <Component Id="ControllerExe" Bitness="always64">
+        <File Id="ThreadHaulControllerExe" Source="$(BinDir)\ThreadHaulController.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="Readme" Bitness="always64">
+        <File Id="ReadmeMd" Source="$(RepoDir)\README.md" KeyPath="yes" />
+      </Component>
+      <Component Id="License" Bitness="always64">
+        <File Id="LicenseTxt" Source="$(RepoDir)\LICENSE" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Dashboard" Directory="DashboardDir">
+      <Component Id="DashIndex" Bitness="always64"><File Id="DashIndexHtml" Source="$(BinDir)\dashboard\index.html" KeyPath="yes" /></Component>
+      <Component Id="DashApp" Bitness="always64"><File Id="DashAppJs" Source="$(BinDir)\dashboard\app.js" KeyPath="yes" /></Component>
+      <Component Id="DashStyles" Bitness="always64"><File Id="DashStylesCss" Source="$(BinDir)\dashboard\styles.css" KeyPath="yes" /></Component>
+      <Component Id="DashOpenApi" Bitness="always64"><File Id="DashOpenApiJson" Source="$(BinDir)\dashboard\openapi.json" KeyPath="yes" /></Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Templates" Directory="TemplatesDir">
+      <Component Id="ConfigExample" Bitness="always64"><File Id="ConfigExampleJson" Source="$(RepoDir)\config\config.example.json" KeyPath="yes" /></Component>
+      <Component Id="ConfigSchema" Bitness="always64"><File Id="ConfigSchemaJson" Source="$(RepoDir)\config\config.schema.json" KeyPath="yes" /></Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Data">
+      <!-- The live config: created from the example only if none exists, never
+           overwritten by upgrades, and kept on uninstall (like install.ps1). -->
+      <Component Id="LiveConfig" Directory="DATADIR" Bitness="always64" NeverOverwrite="yes" Permanent="yes"
+                 Guid="{9A1E5C3B-2D4F-4B8A-8E6C-7F0B3D1A5C92}">
+        <File Id="LiveConfigJson" Name="config.json" Source="$(RepoDir)\config\config.example.json" KeyPath="yes" />
+      </Component>
+      <Component Id="LogFolder" Directory="LOGDIR" Bitness="always64" Permanent="yes"
+                 Guid="{4C7D2B9E-1F3A-4E5C-B8D6-2A9F0E7C3B15}">
+        <CreateFolder />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-18
+
+Distribution release. ThreadHaul and its configuration are unchanged; this release adds new ways to install it.
+
+### Added
+
+- **MSI installer.** `ThreadHaul-<version>-win-x64.msi` is attached to every release. It installs to Program Files and adds that folder to the system `PATH`. It sets up:
+  - the service, with restart on failure, only `SeDebugPrivilege` and `SeChangeNotifyPrivilege`, and an unrestricted service SID;
+  - the ProgramData configuration, locked to SYSTEM and Administrators, never overwritten and kept on uninstall;
+  - the logs folder and the Event Log source.
+
+  Upgrades keep your configuration, and silent installs work with `msiexec /i ... /qn`. Build it with `scripts\build-msi.ps1` (WiX 5, pinned in `dotnet-tools.json`). CI builds and validates it on every pull request.
+- **Code signing pipeline.** Releases sign the executables and the MSI through SignPath once the project's signing is approved, and the workflow verifies every signature before publishing. Until then, releases are published unsigned and say so. The README's "Code signing" section has the policy and the maintainer setup.
+- **winget.** `scripts\winget-manifest.ps1` generates and validates the `Hikunokyojin.ThreadHaul` manifests for a release. Once listed: `winget install Hikunokyojin.ThreadHaul`.
+
 ## [2.1.0] - 2026-11-08
 
 Expandability release. Existing configs keep working unchanged: every new section is optional, and the defaults reproduce 2.0.
@@ -106,7 +121,8 @@ First public release.
   - a log-graphing script.
 - **Builds:** CMake and `build.cmd`, with 231 unit-test checks, GitHub Actions CI and release packaging.
 
-[Unreleased]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases/tag/v1.0.0

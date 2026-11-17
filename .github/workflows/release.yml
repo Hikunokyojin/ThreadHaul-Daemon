@@ -18,6 +18,9 @@ jobs:
     runs-on: windows-latest
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # Code signing (SignPath) switches on once the API token secret exists;
+      # until then releases are published unsigned. See README "Code signing".
+      SIGNING: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,16 +35,103 @@ jobs:
       - name: Test
         run: ctest --preset release
 
-      - name: Package
+      - name: Stage files
         shell: powershell
         run: |
           $name = "ThreadHaul-$env:TAG-win-x64"
           $stage = "out\package\$name"
           cmake --install out\build --config Release --prefix $stage
-          Compress-Archive -Path "$stage\*" -DestinationPath "out\package\$name.zip" -Force
-          $hash = (Get-FileHash "out\package\$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Set-Content "out\package\$name.zip.sha256" -Encoding ascii
-          "ZIP=out\package\$name.zip" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          New-Item -ItemType Directory -Force out\unsigned | Out-Null
+          Copy-Item "$stage\bin\*.exe" out\unsigned\
+          "NAME=$name" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "STAGE=$stage" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      # --- Sign the executables (only when SignPath is configured) ---
+      - name: Upload executables for signing
+        id: exes
+        if: env.SIGNING == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-executables
+          path: out/unsigned/*.exe
+          if-no-files-found: error
+
+      - name: Sign executables (SignPath)
+        if: env.SIGNING == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: executables
+          github-artifact-id: ${{ steps.exes.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: out/signed
+
+      - name: Use signed executables
+        if: env.SIGNING == 'true'
+        shell: powershell
+        run: |
+          foreach ($f in Get-ChildItem out\signed -Recurse -Filter *.exe) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            if ($sig.Status -ne 'Valid') { throw "$($f.Name) is not validly signed: $($sig.Status)" }
+            Copy-Item $f.FullName "$env:STAGE\bin\$($f.Name)" -Force
+          }
+
+      # --- MSI, built from the (signed) executables ---
+      - name: Build MSI
+        shell: powershell
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          .\scripts\build-msi.ps1 -Version $version -BinDir "$env:STAGE\bin" -OutDir out\msi
+          $msi = Get-ChildItem out\msi\*.msi | Select-Object -First 1
+          "MSI=$($msi.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload MSI for signing
+        id: msi
+        if: env.SIGNING == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-msi
+          path: out/msi/*.msi
+          if-no-files-found: error
+
+      - name: Sign MSI (SignPath)
+        if: env.SIGNING == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: msi
+          github-artifact-id: ${{ steps.msi.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: out/signed-msi
+
+      - name: Use signed MSI
+        if: env.SIGNING == 'true'
+        shell: powershell
+        run: |
+          $signed = Get-ChildItem out\signed-msi -Recurse -Filter *.msi | Select-Object -First 1
+          $sig = Get-AuthenticodeSignature $signed.FullName
+          if ($sig.Status -ne 'Valid') { throw "MSI is not validly signed: $($sig.Status)" }
+          Copy-Item $signed.FullName $env:MSI -Force
+
+      - name: Package
+        shell: powershell
+        run: |
+          $zip = "out\package\$env:NAME.zip"
+          Compress-Archive -Path "$env:STAGE\*" -DestinationPath $zip -Force
+          $msiOut = "out\package\$env:NAME.msi"
+          Copy-Item $env:MSI $msiOut -Force
+          foreach ($f in $zip, $msiOut) {
+            $hash = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+            "$hash  $(Split-Path $f -Leaf)" | Set-Content "$f.sha256" -Encoding ascii
+          }
+          "ZIP=$zip" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "MSIOUT=$msiOut" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Release notes from CHANGELOG.md
         shell: powershell
@@ -52,9 +142,10 @@ jobs:
           if (-not $start) { throw "CHANGELOG.md has no section for $version" }
           $notes = @()
           for ($i = $start; $i -lt $lines.Count -and $lines[$i] -notmatch '^## \['; $i++) { $notes += $lines[$i] }
+          if ($env:SIGNING -ne 'true') { $notes += ''; $notes += '_These binaries are not code-signed; Windows SmartScreen may warn on first run._' }
           $notes | Set-Content release-notes.md -Encoding utf8
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:TAG $env:ZIP "$env:ZIP.sha256" --title "ThreadHaul $env:TAG" --notes-file release-notes.md
+        run: gh release create $env:TAG $env:ZIP "$env:ZIP.sha256" $env:MSIOUT "$env:MSIOUT.sha256" --title "ThreadHaul $env:TAG" --notes-file release-notes.md
