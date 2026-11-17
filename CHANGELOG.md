@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Fleet web UI** on the controller, at `http://127.0.0.1:7879`, with `--web-port` and `--no-web` options. It shows every connected server's pressure, thresholds, cluster bias and batch processes live, with buttons for throttle, suspend, resume, release, exempt and status on one server or all of them, and a feed of command results. It is loopback only and uses the dashboard's expiring, revocable session key and lockout. Commands are validated before sending. The `web` console command prints a fresh link.
+
+### Changed
+
+- The controller's console output is unbuffered, so it appears immediately when redirected to a file or pipe.
+- `scripts/winget-manifest.ps1` writes manifest schema 1.28.0.
+
 ## [2.2.0] - 2026-11-18
 
 Distribution release. ThreadHaul and its configuration are unchanged; this release adds new ways to install it.

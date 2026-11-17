@@ -26,9 +26,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "FleetWeb.h"
 #include "SecureChannel.h"
 
 #include <atomic>
+#include <deque>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -63,6 +65,8 @@ double g_clusterPercent = 50.0;
 double g_bias = 5.0;
 std::atomic<int> g_nextId{1};
 std::atomic<bool> g_running{true};
+std::deque<json> g_results;          // last command results, for the web UI (guarded by g_mutex)
+fleet::FleetWeb* g_web = nullptr;    // null with --no-web
 
 std::string Timestamp() {
     SYSTEMTIME st;
@@ -188,6 +192,9 @@ void ServeAgent(SOCKET sock, std::string peer) {
             } else if (type == "command_result") {
                 LogLine("command_result", msg);
                 std::printf("[result] %s\n", msg.dump().c_str());
+                std::lock_guard<std::mutex> lock(g_mutex);
+                g_results.push_front(json{{"host", agent->host}, {"time", Timestamp()}, {"result", msg}});
+                if (g_results.size() > 100) g_results.pop_back();
             }
         }
     }
@@ -225,6 +232,64 @@ void PrintAgents() {
     }
 }
 
+// Sends `command` (e.g. "suspend app.exe" or "status") to one agent or "all".
+json Dispatch(const std::string& host, const std::string& command) {
+    std::vector<std::shared_ptr<Agent>> targets;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (auto& [h, a] : g_agents) {
+            if (host == "all" || _stricmp(h.c_str(), host.c_str()) == 0) targets.push_back(a);
+        }
+    }
+    if (targets.empty()) {
+        return json{{"ok", false}, {"message", "no agent named " + host}, {"sent", json::array()}};
+    }
+    json sent = json::array();
+    for (auto& a : targets) {
+        const json cmd{{"type", "command"}, {"id", g_nextId++}, {"command", command}};
+        if (SendLine(*a, cmd)) sent.push_back(a->host);
+        LogLine("command_sent", json{{"host", a->host}, {"command", command}});
+    }
+    return json{{"ok", !sent.empty()},
+                {"message", "sent to " + std::to_string(sent.size()) + " agent(s); results appear as they arrive"},
+                {"sent", sent}};
+}
+
+std::string FleetJson() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    json agents = json::array();
+    int hot = 0;
+    for (auto& [host, a] : g_agents) {
+        const json& hb = a->lastHeartbeat;
+        const double pressure = hb.value("pressure_percent", 0.0);
+        if (pressure >= g_pressureThreshold) ++hot;
+        json e{{"host", host},
+               {"seen_seconds_ago", (GetTickCount64() - a->lastSeen) / 1000},
+               {"bias_percent", a->biasSent},
+               {"pressure_percent", pressure}};
+        for (const char* key : {"pressure_signal", "thresholds", "offset_percent", "batch", "critical", "groups",
+                                "schedules", "coordination_connected"}) {
+            if (hb.contains(key)) e[key] = hb[key];
+        }
+        agents.push_back(e);
+    }
+    return json{{"ok", true},
+                {"agents", agents},
+                {"cluster", {{"agents", agents.size()},
+                             {"hot", hot},
+                             {"pressure_threshold", g_pressureThreshold},
+                             {"cluster_percent", g_clusterPercent},
+                             {"bias_percent", g_bias}}}}
+        .dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+std::string ResultsJson() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    json list = json::array();
+    for (const auto& r : g_results) list.push_back(r);
+    return json{{"ok", true}, {"results", list}}.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
 void Console() {
     std::string line;
     while (g_running && std::getline(std::cin, line)) {
@@ -242,6 +307,14 @@ void Console() {
             PrintAgents();
             continue;
         }
+        if (host == "web") {
+            if (g_web) {
+                std::printf("Fleet UI: %s\n(the link contains a session key; do not share it)\n", g_web->Url().c_str());
+            } else {
+                std::printf("the web UI is off (--no-web)\n");
+            }
+            continue;
+        }
         std::string rest;
         std::getline(in, rest);
         while (!rest.empty() && rest.front() == ' ') rest.erase(0, 1);
@@ -249,38 +322,36 @@ void Console() {
             std::printf("usage: <host|all> <command> [target]   |  list  |  quit\n");
             continue;
         }
-        std::vector<std::shared_ptr<Agent>> targets;
-        {
-            std::lock_guard<std::mutex> lock(g_mutex);
-            for (auto& [h, a] : g_agents) {
-                if (host == "all" || _stricmp(h.c_str(), host.c_str()) == 0) targets.push_back(a);
-            }
-        }
-        if (targets.empty()) {
-            std::printf("no agent named %s\n", host.c_str());
-            continue;
-        }
-        for (auto& a : targets) {
-            const json cmd{{"type", "command"}, {"id", g_nextId++}, {"command", rest}};
-            SendLine(*a, cmd);
-            LogLine("command_sent", json{{"host", a->host}, {"command", rest}});
-        }
+        const json r = Dispatch(host, rest);
+        if (!r.value("ok", false)) std::printf("%s\n", r.value("message", "").c_str());
     }
 }
 
 }
 
 int main(int argc, char* argv[]) {
+    // Unbuffered: when the console is redirected to a file or pipe (a service
+    // wrapper, a log collector), lines such as the fleet UI link appear at once.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc > 1 && (std::string(argv[1]) == "help" || std::string(argv[1]) == "--help")) {
         std::puts("Usage: ThreadHaulController.exe [--port 7878] [--token secret] [--pressure 85]");
         std::puts("           [--cluster-percent 50] [--bias 5] [--log controller.jsonl]");
+        std::puts("           [--web-port 7879] [--no-web]");
+        std::puts("The fleet web UI listens on 127.0.0.1 only; type 'web' in the console for a link.");
         return 0;
     }
     int port = 7878;
+    int webPort = 7879;
+    bool web = true;
     std::string logPath = "controller.jsonl";
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--no-web") web = false;
+    }
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string k = argv[i];
+        if (k == "--no-web") { --i; continue; }
         if (k == "--port") port = std::atoi(argv[i + 1]);
+        else if (k == "--web-port") webPort = std::atoi(argv[i + 1]);
         else if (k == "--token") g_token = argv[i + 1];
         else if (k == "--pressure") g_pressureThreshold = std::atof(argv[i + 1]);
         else if (k == "--cluster-percent") g_clusterPercent = std::atof(argv[i + 1]);
@@ -327,7 +398,28 @@ int main(int argc, char* argv[]) {
         }
     }).detach();
 
+    std::unique_ptr<fleet::FleetWeb> webUi;
+    if (web) {
+        webUi = std::make_unique<fleet::FleetWeb>(fleet::Callbacks{
+            FleetJson, ResultsJson,
+            [](const std::string& host, const std::string& command) {
+                return Dispatch(host, command).dump(-1, ' ', false, json::error_handler_t::replace);
+            }});
+        std::string error;
+        if (webUi->Start(webPort, error)) {
+            g_web = webUi.get();
+            std::printf("Fleet UI: %s\n(the link contains a session key; type 'web' for a new one)\n",
+                        webUi->Url().c_str());
+            LogLine("web_started", json{{"port", webPort}});
+        } else {
+            std::printf("Fleet UI not started: %s\n", error.c_str());
+            webUi.reset();
+        }
+    }
+
     Console();
+    g_web = nullptr;
+    webUi.reset();
     closesocket(listener);
     LogLine("controller_stopped", json::object());
     WSACleanup();

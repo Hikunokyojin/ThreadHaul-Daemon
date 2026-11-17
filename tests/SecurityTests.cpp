@@ -10,6 +10,7 @@
 
 #include "SecureChannel.h"
 #include "SessionGuard.h"
+#include "FleetWeb.h"
 
 using namespace securechannel;
 
@@ -223,7 +224,22 @@ void DashboardSessions() {
 
 }
 
+void FleetCommandValidation() {
+    const char* t = "FleetCommandValidation";
+    Check(fleet::ValidateCommand("suspend", "app.exe").empty(), t, "suspend by name");
+    Check(fleet::ValidateCommand("throttle", "4821").empty(), t, "throttle by PID");
+    Check(fleet::ValidateCommand("status", "").empty(), t, "status without target");
+    Check(!fleet::ValidateCommand("status", "x").empty(), t, "status takes no target");
+    Check(!fleet::ValidateCommand("format", "c:").empty(), t, "unknown verb refused");
+    Check(!fleet::ValidateCommand("suspend", "").empty(), t, "missing target refused");
+    Check(!fleet::ValidateCommand("suspend", "a.exe b.exe").empty(), t, "space (second command) refused");
+    Check(!fleet::ValidateCommand("suspend", "a.exe\nrelease b.exe").empty(), t, "newline refused");
+    Check(!fleet::ValidateCommand("suspend", "C:\\Apps\\a.exe").empty(), t, "path refused");
+    Check(!fleet::ValidateCommand("suspend", std::string(300, 'a')).empty(), t, "overlong target refused");
+}
+
 int main() {
+    FleetCommandValidation();
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         std::printf("FAIL  WSAStartup\n");

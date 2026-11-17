@@ -616,7 +616,21 @@ The token must be at least 16 characters; use a long random value, and store it 
 - `list`;
 - `<host> suspend <exe>`;
 - `all release <exe>`;
+- `web` prints a link to the fleet web UI with a fresh session key;
 - `quit`.
+
+**Fleet web UI.** The controller also serves a browser view of the whole fleet at `http://127.0.0.1:7879`. It prints the link, with a session key, when it starts.
+- **What it shows:** every connected server with its pressure, thresholds, cluster bias, last heartbeat and batch processes, refreshed every two seconds.
+- **Commands:** buttons for `throttle`, `suspend`, `resume` and `release` on each batch process, plus a command form for one server or `all` that also offers `exempt` and `status`. Results from the agents stream into a table.
+- **Security:** it has the same protections as the agent dashboard. It binds to `127.0.0.1` only and checks the `Host` and `Origin` headers. The session key expires after 30 minutes idle or 12 hours, ends with **Sign out**, and 10 bad keys within a minute lock the API for a minute. Commands are validated before anything is sent.
+- **Options:** change the port with `--web-port`, or turn the UI off with `--no-web`. To view it from another machine, use an SSH tunnel or remote desktop to the controller host. The UI is never exposed on the network.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/v1/fleet` | Connected agents with their last heartbeat, plus cluster state |
+| `GET /api/v1/results` | The last 100 command results from agents |
+| `POST /api/v1/command` | `{"host":"<name>\|all","command":"suspend","target":"app.exe"}`. Commands are `throttle`, `suspend`, `resume`, `release`, `exempt` and `status` (no target). |
+| `POST /api/v1/logout` | Ends the session |
 
 ## Security model
 
