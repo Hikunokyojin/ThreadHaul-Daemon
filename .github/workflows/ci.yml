@@ -62,7 +62,7 @@ jobs:
           grep -q '"ok":true' status.json
           sudo threadhauld stop
           sudo apt-get remove -y threadhaul
-          test -e /etc/threadhaul/config.json
+          sudo test -e /etc/threadhaul/config.json   # kept on removal (the folder is root-only)
 
       - name: Check the .rpm
         run: rpm -qpl build/threadhaul-*.rpm | grep -q /usr/sbin/threadhauld
