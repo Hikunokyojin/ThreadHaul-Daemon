@@ -7,7 +7,7 @@
 [![CI](https://github.com/Hikunokyojin/ThreadHaul-Daemon/actions/workflows/ci.yml/badge.svg)](https://github.com/Hikunokyojin/ThreadHaul-Daemon/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Hikunokyojin/ThreadHaul-Daemon?sort=semver)](https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20Server-0078D4)
+![Platform: Windows | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D4)
 ![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C)
 
 </div>
@@ -209,7 +209,7 @@ winget install Hikunokyojin.ThreadHaul
 **MSI installer.** Download `ThreadHaul-<version>-win-x64.msi` from the [latest release](https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases/latest) and run it, or install silently:
 
 ```powershell
-msiexec /i ThreadHaul-2.2.0-win-x64.msi /qn
+msiexec /i ThreadHaul-2.3.0-win-x64.msi /qn
 ```
 
 The MSI sets up the same things as `install.ps1`:

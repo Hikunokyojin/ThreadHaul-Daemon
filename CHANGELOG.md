@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-19
+
+Linux support and a web UI for the fleet controller. Existing Windows installations and configurations are unaffected.
+
 ### Added
 
 - **Fleet web UI** on the controller, at `http://127.0.0.1:7879`, with `--web-port` and `--no-web` options. It shows every connected server's pressure, thresholds, cluster bias and batch processes live, with buttons for throttle, suspend, resume, release, exempt and status on one server or all of them, and a feed of command results. It is loopback only and uses the dashboard's expiring, revocable session key and lockout. Commands are validated before sending. The `web` console command prints a fresh link.
@@ -133,7 +137,8 @@ First public release.
   - a log-graphing script.
 - **Builds:** CMake and `build.cmd`, with 231 unit-test checks, GitHub Actions CI and release packaging.
 
-[Unreleased]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.2.0...v2.3.0
 [2.2.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Hikunokyojin/ThreadHaul-Daemon/compare/v1.0.0...v2.0.0
