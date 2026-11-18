@@ -28,6 +28,7 @@
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="ThreadHaulDaemon">
         <Directory Id="DashboardDir" Name="dashboard" />
+        <Directory Id="FleetDir" Name="fleet" />
         <Directory Id="TemplatesDir" Name="config" />
       </Directory>
     </StandardDirectory>
@@ -41,6 +42,7 @@
       <ComponentGroupRef Id="Service" />
       <ComponentGroupRef Id="Tools" />
       <ComponentGroupRef Id="Dashboard" />
+      <ComponentGroupRef Id="Fleet" />
       <ComponentGroupRef Id="Templates" />
       <ComponentGroupRef Id="Data" />
     </Feature>
@@ -110,6 +112,12 @@
       <Component Id="DashApp" Bitness="always64"><File Id="DashAppJs" Source="$(BinDir)\dashboard\app.js" KeyPath="yes" /></Component>
       <Component Id="DashStyles" Bitness="always64"><File Id="DashStylesCss" Source="$(BinDir)\dashboard\styles.css" KeyPath="yes" /></Component>
       <Component Id="DashOpenApi" Bitness="always64"><File Id="DashOpenApiJson" Source="$(BinDir)\dashboard\openapi.json" KeyPath="yes" /></Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Fleet" Directory="FleetDir">
+      <Component Id="FleetIndex" Bitness="always64"><File Id="FleetIndexHtml" Source="$(BinDir)\fleet\index.html" KeyPath="yes" /></Component>
+      <Component Id="FleetJs" Bitness="always64"><File Id="FleetJsFile" Source="$(BinDir)\fleet\fleet.js" KeyPath="yes" /></Component>
+      <Component Id="FleetCss" Bitness="always64"><File Id="FleetCssFile" Source="$(BinDir)\fleet\fleet.css" KeyPath="yes" /></Component>
     </ComponentGroup>
 
     <ComponentGroup Id="Templates" Directory="TemplatesDir">

@@ -75,8 +75,13 @@ target_link_libraries(threadhaul_core PUBLIC
 add_executable(ThreadHaulDaemon src/service/main.cpp)
 target_link_libraries(ThreadHaulDaemon PRIVATE threadhaul_core)
 
-add_executable(ThreadHaulController src/controller/main.cpp src/common/SecureChannel.cpp)
-target_include_directories(ThreadHaulController PRIVATE src/common third_party)
+add_executable(ThreadHaulController src/controller/main.cpp src/controller/FleetWeb.cpp
+               src/service/HttpServer.cpp src/common/SecureChannel.cpp)
+target_include_directories(ThreadHaulController PRIVATE src/common src/service third_party)
+# The controller serves its fleet UI from <exe dir>\fleet.
+add_custom_command(TARGET ThreadHaulController POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/web/fleet $<TARGET_FILE_DIR:ThreadHaulController>/fleet)
 target_link_libraries(ThreadHaulController PRIVATE ws2_32 bcrypt)
 
 add_executable(critical_simulator tools/simulators/critical_simulator.cpp)
@@ -101,6 +106,9 @@ if(BUILD_TESTING)
         set_target_properties(${test} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
         add_test(NAME ${test} COMMAND ${test})
     endforeach()
+    # The security tests also cover the controller's web command validation.
+    target_sources(SecurityTests PRIVATE src/controller/FleetWeb.cpp)
+    target_include_directories(SecurityTests PRIVATE src/controller)
 endif()
 
 # --------------------------------------------------------------------------
@@ -112,6 +120,7 @@ endif()
 # --------------------------------------------------------------------------
 install(TARGETS ThreadHaulDaemon ThreadHaulController RUNTIME DESTINATION bin)
 install(DIRECTORY web/dashboard/ DESTINATION bin/dashboard)
+install(DIRECTORY web/fleet/ DESTINATION bin/fleet)
 install(FILES config/config.example.json config/config.schema.json DESTINATION config)
 install(FILES scripts/install.ps1 scripts/uninstall.ps1 DESTINATION scripts)
 install(TARGETS critical_simulator batch_simulator RUNTIME DESTINATION tools)

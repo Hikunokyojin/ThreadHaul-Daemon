@@ -33,7 +33,7 @@ $Id = 'Hikunokyojin.ThreadHaul'
 $Tag = "v$Version"
 $Asset = "ThreadHaul-$Tag-win-x64.msi"
 $Base = "https://github.com/Hikunokyojin/ThreadHaul-Daemon/releases/download/$Tag"
-$ManifestVersion = '1.6.0'
+$ManifestVersion = '1.28.0'   # the schema winget-pkgs asks submissions to conform to
 
 $work = Join-Path $OutDir 'download'
 New-Item -ItemType Directory -Force -Path $work | Out-Null

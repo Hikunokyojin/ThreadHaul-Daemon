@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ThreadHaul Fleet</title>
+  <link rel="stylesheet" href="/fleet.css">
+  <script src="/fleet.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>ThreadHaul Fleet</h1>
+      <p class="subtitle">Every server connected to this controller</p>
+    </div>
+    <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">Connecting…</span></div>
+    <button class="btn" id="signout" type="button">Sign out</button>
+  </header>
+
+  <div id="auth" class="auth hidden">
+    <div class="card">
+      <h2>Access key required</h2>
+      <p id="auth-reason">Type <code>web</code> in the ThreadHaulController console for a link with a fresh key.</p>
+    </div>
+  </div>
+
+  <main id="app">
+    <section class="summary" aria-label="Cluster">
+      <div class="kpi"><span class="label">Servers</span><span class="value" id="k-agents">–</span></div>
+      <div class="kpi"><span class="label">Under pressure</span><span class="value" id="k-hot">–</span></div>
+      <div class="kpi"><span class="label">Cluster bias</span><span class="value" id="k-bias">–</span></div>
+      <div class="kpi"><span class="label">Bias rule</span><span class="value small" id="k-rule">–</span></div>
+    </section>
+
+    <section class="card" aria-label="Send a command">
+      <h2>Command</h2>
+      <form id="cmd-form" class="cmd">
+        <label>Server <select id="cmd-host"><option value="all">all servers</option></select></label>
+        <label>Action
+          <select id="cmd-verb">
+            <option>throttle</option><option>suspend</option><option>resume</option>
+            <option>release</option><option>exempt</option><option>status</option>
+          </select>
+        </label>
+        <label>Target <input id="cmd-target" placeholder="app.exe or PID" autocomplete="off"></label>
+        <button class="btn primary" type="submit">Send</button>
+        <span id="cmd-msg" class="muted"></span>
+      </form>
+    </section>
+
+    <section id="agents" aria-label="Servers"></section>
+    <p id="empty" class="muted hidden">No servers connected. Agents connect when <code>coordination.enabled</code> is set in their config.json.</p>
+
+    <section class="card" aria-label="Command results">
+      <h2>Results</h2>
+      <table class="results"><thead><tr><th>Time</th><th>Server</th><th>Result</th></tr></thead><tbody id="results"></tbody></table>
+    </section>
+  </main>
+</body>
+</html>
