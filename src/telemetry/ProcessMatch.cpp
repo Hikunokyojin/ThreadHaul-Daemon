@@ -14,8 +14,20 @@ std::wstring Lower(std::wstring s) {
 }
 
 bool Same(const std::wstring& a, const std::wstring& b) {
-    return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+    return Lower(a) == Lower(b);
 }
+
+}
+
+#ifndef _WIN32
+// Linux: ProcessCommandLine, ProcessUser, ServiceProcessId and
+// ProcessStartTime live in src/platform/linux/LinuxTelemetry.cpp.
+unsigned long long ProcessStartTime(DWORD pid);
+namespace {
+unsigned long long StartTime(DWORD pid) { return ProcessStartTime(pid); }
+}
+#else
+namespace {
 
 unsigned long long StartTime(DWORD pid) {
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -103,6 +115,7 @@ DWORD ServiceProcessId(const std::wstring& serviceName) {
     CloseServiceHandle(scm);
     return pid;
 }
+#endif
 
 bool ConditionMatches(const MatchCondition& c, DWORD pid, const ProcessFacts& facts, DWORD servicePid) {
     if (!c.commandLineContains.empty()) {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "PlatformTypes.h"
 
 #include <string>
 #include <vector>

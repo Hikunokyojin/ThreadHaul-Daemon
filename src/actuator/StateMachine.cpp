@@ -2,6 +2,10 @@
 #include "PriorityControl.h"
 #include "ThreadControl.h"
 
+#ifndef _WIN32
+#include "LinuxProc.h"
+#endif
+
 namespace actuator {
 
 ProcessStateMachine::ProcessStateMachine(std::wstring batchProcessName,
@@ -13,20 +17,35 @@ ProcessStateMachine::ProcessStateMachine(std::wstring batchProcessName,
     , config_(config)
     , onTransition_(std::move(onTransition))
     , actions_(batchProcessId) {
+#ifdef _WIN32
     processHandle_ = OpenProcess(SYNCHRONIZE, FALSE, batchProcessId_);
+#else
+    linuxproc::Stat st;
+    if (linuxproc::ReadStat(static_cast<int>(batchProcessId_), st)) startTime_ = st.starttime;
+#endif
 }
 
 ProcessStateMachine::~ProcessStateMachine() {
+#ifdef _WIN32
     if (processHandle_ != nullptr) {
         CloseHandle(processHandle_);
     }
+#endif
 }
 
 bool ProcessStateMachine::HasExited() const {
+#ifdef _WIN32
     if (processHandle_ == nullptr) {
         return false;
     }
     return WaitForSingleObject(processHandle_, 0) == WAIT_OBJECT_0;
+#else
+    // Gone, a zombie, or the PID now belongs to a different process.
+    if (startTime_ == 0) return false;
+    linuxproc::Stat st;
+    return !linuxproc::ReadStat(static_cast<int>(batchProcessId_), st) || st.state == 'Z' ||
+           st.starttime != startTime_;
+#endif
 }
 
 bool ProcessStateMachine::Update(double criticalProcessCpuPercent) {
