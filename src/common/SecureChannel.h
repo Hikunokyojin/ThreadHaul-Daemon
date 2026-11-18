@@ -1,6 +1,6 @@
 #pragma once
 
-#include <winsock2.h>
+#include "NetCompat.h"
 
 #include <cstdint>
 #include <mutex>
@@ -10,7 +10,7 @@
 namespace securechannel {
 
 // Encrypted, mutually authenticated message channel over a connected TCP
-// socket, built only on Windows CNG (bcrypt). Used between the service and
+// socket, built on Windows CNG (bcrypt) or, on Linux, OpenSSL libcrypto. Used between the service and
 // ThreadHaulController.
 //
 // Handshake (plaintext JSON frames):
