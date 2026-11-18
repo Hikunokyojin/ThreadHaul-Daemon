@@ -138,7 +138,12 @@ void Safety() {
     Check(telemetry::ClassifyProcess(child, L"app", {L"app"}).level == ProcessSafety::Essential, t,
           "configured essential name");
     const auto level = telemetry::ClassifyProcess(child, L"app", {}).level;
-    Check(getuid() == 0 || level == ProcessSafety::Normal, t, "own child is an ordinary application");
+    // Under a systemd service (a CI runner) or a system account the child is
+    // correctly a "service"; from a login session it is an ordinary application.
+    const bool serviceContext = getuid() < 1000 ||
+        linuxproc::ReadText("/proc/self/cgroup").find("/system.slice/") != std::string::npos;
+    Check(level == (serviceContext ? ProcessSafety::Service : ProcessSafety::Normal), t,
+          std::string("own child is ") + (serviceContext ? "a service" : "an ordinary application"));
     Kill(child);
     Check(std::string(telemetry::SafetyName(ProcessSafety::Service)) == "service", t, "safety names");
 }
