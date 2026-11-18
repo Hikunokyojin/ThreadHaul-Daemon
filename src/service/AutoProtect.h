@@ -1,6 +1,17 @@
 #pragma once
 
-#include <windows.h>
+#include "ServiceCompat.h"
+
+#ifndef _WIN32
+// Windows priority-class values, kept so logs and the dashboard read the
+// same on both platforms. Linux maps them onto nice values.
+constexpr DWORD IDLE_PRIORITY_CLASS = 0x40;
+constexpr DWORD BELOW_NORMAL_PRIORITY_CLASS = 0x4000;
+constexpr DWORD NORMAL_PRIORITY_CLASS = 0x20;
+constexpr DWORD ABOVE_NORMAL_PRIORITY_CLASS = 0x8000;
+constexpr DWORD HIGH_PRIORITY_CLASS = 0x80;
+constexpr DWORD REALTIME_PRIORITY_CLASS = 0x100;
+#endif
 
 #include <functional>
 #include <map>
@@ -11,7 +22,7 @@
 #include "AutoProtectPolicy.h"
 #include "ProcessTable.h"
 
-namespace daemon {
+namespace thd {
 
 // Applies AutoProtectPolicy to real processes. Only ordinary applications
 // are ever selected: anything classified essential, system or service, and
@@ -32,6 +43,9 @@ public:
         DWORD        currentClass = NORMAL_PRIORITY_CLASS;
         double       cpuAtAction = 0.0;
         ULONGLONG    sinceTick = 0;
+#ifndef _WIN32
+        int          originalNice = 0;  // restored exactly
+#endif
     };
 
     // true = never select this process

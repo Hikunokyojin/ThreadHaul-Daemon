@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace daemon {
+namespace thd {
 
 // Fires a notification when a batch process is suspended. Two channels:
 //  - popup: a message box in the active console session (WTSSendMessage),

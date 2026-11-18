@@ -1,6 +1,15 @@
 #include "Daemon.h"
 
+#ifdef _WIN32
 #include <psapi.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <cstring>
+
+#include "LinuxProc.h"
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -8,35 +17,51 @@
 #include <sstream>
 
 #include "ConfigSecurity.h"
+#include "Utf8.h"
 
 #include <fstream>
 
-namespace daemon {
+namespace thd {
 
 namespace {
 
 using nlohmann::ordered_json;
 
-std::string Narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
-                                      nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
-                        nullptr);
-    return s;
-}
+std::string Narrow(const std::wstring& w) { return utf8::FromWide(w); }
 
-std::wstring Widen(const std::string& s) {
-    if (s.empty()) return {};
-    const int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
-    return w;
-}
+std::wstring Widen(const std::string& s) { return utf8::ToWide(s); }
+
+std::wstring LowerName(std::wstring s);
 
 bool SameName(const std::wstring& a, const std::wstring& b) {
+#ifdef _WIN32
     return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+#else
+    return a.size() == b.size() && LowerName(a) == LowerName(b);
+#endif
+}
+
+// Last-write time and size of the config, to notice edits.
+bool FileStamp(const std::wstring& path, FILETIME& written, ULONGLONG& size) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA attr{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attr)) return false;
+    written = attr.ftLastWriteTime;
+    size = (static_cast<ULONGLONG>(attr.nFileSizeHigh) << 32) | attr.nFileSizeLow;
+#else
+    struct stat sb{};
+    if (stat(utf8::FromWide(path).c_str(), &sb) != 0) return false;
+    const uint64_t t = static_cast<uint64_t>(sb.st_mtim.tv_sec) * 10000000ull +
+                       static_cast<uint64_t>(sb.st_mtim.tv_nsec) / 100;
+    written.dwLowDateTime = static_cast<DWORD>(t);
+    written.dwHighDateTime = static_cast<DWORD>(t >> 32);
+    size = static_cast<ULONGLONG>(sb.st_size);
+#endif
+    return true;
+}
+
+bool SameStamp(const FILETIME& a, const FILETIME& b) {
+    return a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime;
 }
 
 bool Contains(const std::vector<std::wstring>& names, const std::wstring& name) {
@@ -134,6 +159,7 @@ ordered_json Reply(bool ok, const std::string& message) {
 }
 
 std::wstring DefaultConfigPath(bool preferExeDirectory) {
+#ifdef _WIN32
     if (preferExeDirectory) {
         wchar_t exe[MAX_PATH];
         if (GetModuleFileNameW(nullptr, exe, MAX_PATH) > 0) {
@@ -146,12 +172,27 @@ std::wstring DefaultConfigPath(bool preferExeDirectory) {
     wchar_t programData[MAX_PATH] = L"C:\\ProgramData";
     GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH);
     return std::wstring(programData) + L"\\ThreadHaulDaemon\\config.json";
+#else
+    if (preferExeDirectory) {
+        std::error_code ec;
+        const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            const auto local = exe.parent_path() / "config.json";
+            if (std::filesystem::exists(local, ec)) return Widen(local.string());
+        }
+    }
+    return L"/etc/threadhaul/config.json";
+#endif
 }
 
 Daemon::Daemon(std::wstring configPath) : configPath_(std::move(configPath)) {
+#ifdef _WIN32
     SYSTEM_INFO si;
     GetSystemInfo(&si);
     cores_ = si.dwNumberOfProcessors;
+#else
+    cores_ = linuxproc::LogicalCores();
+#endif
 }
 
 Daemon::~Daemon() {
@@ -186,11 +227,7 @@ bool Daemon::Initialize(std::wstring& error) {
     if (!LoadAndVerify(cfg, error)) {
         return false;
     }
-    WIN32_FILE_ATTRIBUTE_DATA attr{};
-    if (GetFileAttributesExW(configPath_.c_str(), GetFileExInfoStandard, &attr)) {
-        configWriteTime_ = attr.ftLastWriteTime;
-        configSize_ = (static_cast<ULONGLONG>(attr.nFileSizeHigh) << 32) | attr.nFileSizeLow;
-    }
+    FileStamp(configPath_, configWriteTime_, configSize_);
 
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     actuator_ = std::make_unique<actuator::ActuatorManager>(
@@ -373,15 +410,15 @@ void Daemon::ApplyConfig(const config::DaemonConfig& cfg, bool initial) {
 }
 
 void Daemon::CheckConfigReload() {
-    WIN32_FILE_ATTRIBUTE_DATA attr{};
-    if (!GetFileAttributesExW(configPath_.c_str(), GetFileExInfoStandard, &attr)) {
+    FILETIME written{};
+    ULONGLONG size = 0;
+    if (!FileStamp(configPath_, written, size)) {
         return;
     }
-    const ULONGLONG size = (static_cast<ULONGLONG>(attr.nFileSizeHigh) << 32) | attr.nFileSizeLow;
-    if (CompareFileTime(&attr.ftLastWriteTime, &configWriteTime_) == 0 && size == configSize_) {
+    if (SameStamp(written, configWriteTime_) && size == configSize_) {
         return;
     }
-    configWriteTime_ = attr.ftLastWriteTime;
+    configWriteTime_ = written;
     configSize_ = size;
 
     config::DaemonConfig cfg;
@@ -968,10 +1005,21 @@ std::string Daemon::DashboardStatus() {
     svc["adaptive_enabled"] = cfg_.adaptiveEnabled;
     svc["memory_trigger"] = cfg_.memoryTriggerEnabled;
     svc["io_trigger"] = cfg_.ioTriggerEnabled;
+#ifdef _WIN32
     PROCESS_MEMORY_COUNTERS pmc{};
     if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
         svc["working_set_mb"] = Round1(pmc.WorkingSetSize / (1024.0 * 1024.0));
     }
+#else
+    {
+        std::istringstream statm(linuxproc::ReadText("/proc/self/statm"));
+        unsigned long long pagesTotal = 0, pagesResident = 0;
+        if (statm >> pagesTotal >> pagesResident) {
+            svc["working_set_mb"] = Round1(static_cast<double>(pagesResident) *
+                                           static_cast<double>(sysconf(_SC_PAGESIZE)) / (1024.0 * 1024.0));
+        }
+    }
+#endif
     j["service"] = svc;
 
     j["base_thresholds"] = {{"high", ThresholdJson(base_.throttleThresholdPercent)},
@@ -993,6 +1041,7 @@ std::string Daemon::DashboardStatus() {
     j["configured"] = lists;
 
     ordered_json sys;
+#ifdef _WIN32
     FILETIME idleFt, kernelFt, userFt;
     if (GetSystemTimes(&idleFt, &kernelFt, &userFt)) {
         const uint64_t idle = telemetry::FileTimeToUint64(idleFt);
@@ -1013,6 +1062,42 @@ std::string Daemon::DashboardStatus() {
         sys["memory_total_gb"] = Round1(ms.ullTotalPhys / (1024.0 * 1024.0 * 1024.0));
         sys["memory_used_gb"] = Round1((ms.ullTotalPhys - ms.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0));
     }
+#else
+    {
+        // /proc/stat "cpu" line: user nice system idle iowait irq softirq steal ...
+        std::istringstream line(linuxproc::ReadText("/proc/stat"));
+        std::string label;
+        uint64_t v[8] = {};
+        if (line >> label && label == "cpu") {
+            for (auto& x : v) line >> x;
+            const uint64_t idle = v[3] + v[4];
+            uint64_t total = 0;
+            for (auto x : v) total += x;
+            double busy = 0.0;
+            if (lastSysTotal_ != 0 && total > lastSysTotal_) {
+                busy = 100.0 * (1.0 - static_cast<double>(idle - lastSysIdle_) /
+                                          static_cast<double>(total - lastSysTotal_));
+            }
+            lastSysIdle_ = idle;
+            lastSysTotal_ = total;
+            sys["cpu_percent"] = Round1(std::clamp(busy, 0.0, 100.0));
+        }
+        std::istringstream mem(linuxproc::ReadText("/proc/meminfo"));
+        uint64_t totalKb = 0, availKb = 0, val = 0;
+        std::string key, rest;
+        while (mem >> key >> val) {
+            if (key == "MemTotal:") totalKb = val;
+            else if (key == "MemAvailable:") availKb = val;
+            std::getline(mem, rest);
+        }
+        if (totalKb > 0 && availKb <= totalKb) {
+            const double used = static_cast<double>(totalKb - availKb);
+            sys["memory_load_percent"] = static_cast<unsigned>(100.0 * used / static_cast<double>(totalKb) + 0.5);
+            sys["memory_total_gb"] = Round1(static_cast<double>(totalKb) / (1024.0 * 1024.0));
+            sys["memory_used_gb"] = Round1(used / (1024.0 * 1024.0));
+        }
+    }
+#endif
     sys["logical_cores"] = cores_;
     j["system"] = sys;
     if (autoProtect_) {
@@ -1026,7 +1111,7 @@ std::string Daemon::ProcessRolesJson() {
     auto lowered = [](std::vector<std::wstring> v) {
         nlohmann::json a = nlohmann::json::array();
         for (auto& n : v) {
-            CharLowerBuffW(n.data(), static_cast<DWORD>(n.size()));
+            n = LowerName(n);
             a.push_back(Narrow(n));
         }
         return a;
@@ -1112,10 +1197,24 @@ std::string Daemon::SetRole(const std::string& name, const std::string& role, bo
             return Reply(false, "cannot write " + Narrow(temp)).dump();
         }
     }
+#ifdef _WIN32
     if (!ReplaceFileW(configPath_.c_str(), temp.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS,
                       nullptr, nullptr)) {
         const DWORD err = GetLastError();
         DeleteFileW(temp.c_str());
+#else
+    // Give the new file the original's owner and mode, then rename over it.
+    const std::string tempA = Narrow(temp), pathA = Narrow(configPath_);
+    struct stat orig{};
+    bool replaced = false;
+    if (stat(pathA.c_str(), &orig) == 0 && chmod(tempA.c_str(), orig.st_mode & 07777) == 0 &&
+        (geteuid() != 0 || chown(tempA.c_str(), orig.st_uid, orig.st_gid) == 0)) {
+        replaced = std::rename(tempA.c_str(), pathA.c_str()) == 0;
+    }
+    if (!replaced) {
+        const int err = errno;
+        std::remove(tempA.c_str());
+#endif
         return Reply(false, "cannot update " + Narrow(configPath_) + " (error " +
                                 std::to_string(err) + ")")
             .dump();
@@ -1143,6 +1242,7 @@ std::string Daemon::ReadLog(long long offset) {
     ordered_json j;
     j["ok"] = true;
     j["log_path"] = Narrow(path);
+#ifdef _WIN32
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -1179,6 +1279,37 @@ std::string Daemon::ReadLog(long long offset) {
     }
     CloseHandle(h);
     buf.resize(read);
+#else
+    std::ifstream in(std::filesystem::path(path), std::ios::binary);
+    if (!in) {
+        j["offset"] = 0;
+        j["reset"] = offset != 0;
+        j["entries"] = ordered_json::array();
+        j["note"] = "log file not created yet";
+        return j.dump();
+    }
+    in.seekg(0, std::ios::end);
+    const long long size = static_cast<long long>(in.tellg());
+
+    bool reset = false;
+    long long start = offset;
+    if (offset < 0) {                 // first load: the tail of the file
+        start = std::max(0LL, size - kTail);
+        reset = true;
+    } else if (offset > size) {       // the file was rotated
+        start = 0;
+        reset = true;
+    }
+    const long long length = std::min(size - start, kMaxRead);
+    std::string buf(static_cast<size_t>(std::max(0LL, length)), '\0');
+    size_t read = 0;
+    if (length > 0) {
+        in.seekg(start);
+        in.read(buf.data(), static_cast<std::streamsize>(length));
+        read = static_cast<size_t>(std::max<std::streamsize>(0, in.gcount()));
+    }
+    buf.resize(read);
+#endif
 
     size_t begin = 0;
     if (offset < 0 && start > 0) {    // skip the partial first line of the tail

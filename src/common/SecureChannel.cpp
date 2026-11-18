@@ -1,7 +1,15 @@
 #include "SecureChannel.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <bcrypt.h>
+#else
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
+#endif
+
+#include <chrono>
 
 #include <cstdio>
 #include <cstdlib>
@@ -15,6 +23,7 @@ namespace {
 constexpr size_t kTagSize = 16;
 constexpr size_t kNonceSize = 12;
 
+#ifdef _WIN32
 std::string Hash(const std::string& key, const std::string& data, bool hmac) {
     BCRYPT_ALG_HANDLE alg = nullptr;
     if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr,
@@ -79,6 +88,57 @@ bool Gcm(bool encrypt, const std::string& key, const std::string& nonce, const s
     return ok;
 }
 
+#else
+std::string Hash(const std::string& key, const std::string& data, bool hmac) {
+    std::string out(32, '\0');
+    unsigned int len = 0;
+    const unsigned char* d = reinterpret_cast<const unsigned char*>(data.data());
+    const bool ok = hmac
+        ? HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()), d, data.size(),
+               reinterpret_cast<unsigned char*>(out.data()), &len) != nullptr
+        : EVP_Digest(d, data.size(), reinterpret_cast<unsigned char*>(out.data()), &len,
+                     EVP_sha256(), nullptr) == 1;
+    if (!ok || len != 32) out.clear();
+    return out;
+}
+
+bool Gcm(bool encrypt, const std::string& key, const std::string& nonce, const std::string& in,
+         std::string& out) {
+    if (key.size() != 32 || nonce.size() != kNonceSize) return false;
+    if (!encrypt && in.size() < kTagSize) return false;
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return false;
+    const size_t bodyLen = encrypt ? in.size() : in.size() - kTagSize;
+    std::string body(bodyLen + 16, '\0');
+    const auto* k = reinterpret_cast<const unsigned char*>(key.data());
+    const auto* iv = reinterpret_cast<const unsigned char*>(nonce.data());
+    const auto* src = reinterpret_cast<const unsigned char*>(in.data());
+    auto* dst = reinterpret_cast<unsigned char*>(body.data());
+    int n = 0, fin = 0;
+    bool ok = (encrypt ? EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, k, iv)
+                       : EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, k, iv)) == 1;
+    if (ok && bodyLen) {
+        ok = (encrypt ? EVP_EncryptUpdate(ctx, dst, &n, src, static_cast<int>(bodyLen))
+                      : EVP_DecryptUpdate(ctx, dst, &n, src, static_cast<int>(bodyLen))) == 1;
+    }
+    std::string tag = encrypt ? std::string(kTagSize, '\0') : in.substr(bodyLen);
+    if (ok && encrypt) {
+        ok = EVP_EncryptFinal_ex(ctx, dst + n, &fin) == 1 &&
+             EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, kTagSize, tag.data()) == 1;
+    } else if (ok) {
+        // The tag is checked in DecryptFinal: a mismatch means tampering.
+        ok = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, kTagSize, tag.data()) == 1 &&
+             EVP_DecryptFinal_ex(ctx, dst + n, &fin) == 1;
+    }
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok) return false;
+    body.resize(bodyLen);
+    out = encrypt ? body + tag : body;
+    return true;
+}
+
+#endif
+
 std::string Nonce(uint64_t seq, bool clientToServer) {
     std::string n(kNonceSize, '\0');
     n[0] = clientToServer ? 'C' : 'S';
@@ -103,8 +163,14 @@ bool AesGcmDecrypt(const std::string& key, const std::string& nonce,
 
 std::string RandomBytes(size_t n) {
     std::string out(n, '\0');
-    if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(out.data()), static_cast<ULONG>(n),
-                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+#ifdef _WIN32
+    const bool failed = BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(out.data()),
+                                        static_cast<ULONG>(n), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0;
+#else
+    const bool failed = n && RAND_bytes(reinterpret_cast<unsigned char*>(out.data()),
+                                        static_cast<int>(n)) != 1;
+#endif
+    if (failed) {
         // Predictable keys or nonces would silently break every guarantee;
         // stopping is the only safe answer.
         std::fprintf(stderr, "fatal: the system random number generator failed\n");
@@ -158,15 +224,16 @@ bool Channel::SendFrame(const std::string& frame) {
     data += frame;
     size_t sent = 0;
     while (sent < data.size()) {
-        const int r = send(sock_, data.data() + sent, static_cast<int>(data.size() - sent), 0);
-        if (r == SOCKET_ERROR) return false;
+        const int r = send(sock_, data.data() + sent, static_cast<int>(data.size() - sent), TH_SEND_FLAGS);
+        if (r <= 0) return false;
         sent += static_cast<size_t>(r);
     }
     return true;
 }
 
 int Channel::ReceiveFrame(std::string& frame, int timeoutMs) {
-    const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(timeoutMs);
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
     while (true) {
         if (rxBuffer_.size() >= 4) {
             const uint32_t n = (static_cast<uint32_t>(static_cast<unsigned char>(rxBuffer_[0])) << 24) |
@@ -180,14 +247,16 @@ int Channel::ReceiveFrame(std::string& frame, int timeoutMs) {
                 return 1;
             }
         }
-        const ULONGLONG now = GetTickCount64();
+        const auto now = Clock::now();
         if (now >= deadline) return 0;
         fd_set set;
         FD_ZERO(&set);
         FD_SET(sock_, &set);
-        const ULONGLONG left = deadline - now;
+        const long long left =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count() + 1;
         timeval tv{static_cast<long>(left / 1000), static_cast<long>((left % 1000) * 1000)};
-        const int ready = select(0, &set, nullptr, nullptr, &tv);
+        // The first argument is ignored by Winsock and required by POSIX.
+        const int ready = select(static_cast<int>(sock_ + 1), &set, nullptr, nullptr, &tv);
         if (ready == SOCKET_ERROR) return -1;
         if (ready == 0) return 0;
         char buf[8192];

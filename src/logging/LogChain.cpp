@@ -1,5 +1,6 @@
 #include "LogChain.h"
 
+#include <filesystem>
 #include <fstream>
 
 #include <nlohmann/json.hpp>
@@ -20,7 +21,7 @@ std::string ChainLine(const std::string& line, const std::string& prevHash) {
 }
 
 std::string LastLineHash(const std::wstring& path) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(std::filesystem::path(path), std::ios::binary);
     if (!f) return "";
     // Read the tail; log lines are far shorter than 64 KiB.
     f.seekg(0, std::ios::end);

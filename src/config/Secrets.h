@@ -9,7 +9,16 @@ namespace config {
 // them under any account, but the value is useless on another computer or
 // in a copied config. Produce one with "ThreadHaulDaemon.exe protect-secret".
 // The config file's ACL still controls who on this machine can read it.
+//
+// Linux has no DPAPI: values are "sealed:<base64>", AES-256-GCM under a
+// random machine key in /etc/threadhaul/secret.key (root only, created on
+// first protect-secret). THREADHAUL_SECRET_KEY overrides the key path.
+#ifdef _WIN32
 constexpr const char* kSecretPrefix = "dpapi:";
+#else
+constexpr const char* kSecretPrefix = "sealed:";
+constexpr const char* kSecretKeyPath = "/etc/threadhaul/secret.key";
+#endif
 
 bool IsProtectedSecret(const std::string& value);
 

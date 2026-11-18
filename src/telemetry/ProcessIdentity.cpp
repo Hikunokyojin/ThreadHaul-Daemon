@@ -1,8 +1,14 @@
 #include "ProcessIdentity.h"
 
+#ifdef _WIN32
 #include <softpub.h>
 #include <wincrypt.h>
 #include <wintrust.h>
+#else
+#include "LinuxProc.h"
+#endif
+
+#include "Utf8.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -12,7 +18,11 @@ namespace telemetry {
 namespace {
 
 bool SameText(const std::wstring& a, const std::wstring& b) {
+#ifdef _WIN32
     return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+#else
+    return a == b;  // Linux paths are case-sensitive
+#endif
 }
 
 std::wstring Lower(std::wstring s) {
@@ -20,16 +30,9 @@ std::wstring Lower(std::wstring s) {
     return s;
 }
 
-std::string Narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
-                                      nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
-                        nullptr);
-    return s;
-}
+std::string Narrow(const std::wstring& w) { return utf8::FromWide(w); }
 
+#ifdef _WIN32
 unsigned long long StartTime(DWORD pid) {
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (h == nullptr) return 0;
@@ -41,9 +44,16 @@ unsigned long long StartTime(DWORD pid) {
     CloseHandle(h);
     return t;
 }
+#else
+unsigned long long StartTime(DWORD pid) {
+    linuxproc::Stat st;
+    return linuxproc::ReadStat(static_cast<int>(pid), st) ? st.starttime : 0;
+}
+#endif
 
 }
 
+#ifdef _WIN32
 std::wstring ProcessImagePath(DWORD pid) {
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (h == nullptr) return L"";
@@ -86,6 +96,13 @@ std::wstring FilePublisher(const std::wstring& path) {
     WinVerifyTrust(static_cast<HWND>(INVALID_HANDLE_VALUE), &action, &data);
     return publisher;
 }
+#else
+std::wstring ProcessImagePath(DWORD pid) { return utf8::ToWide(linuxproc::ExePath(static_cast<int>(pid))); }
+
+// Linux executables carry no embedded publisher signature; the config
+// loader rejects "publisher" pins, and this fails closed if one gets here.
+std::wstring FilePublisher(const std::wstring&) { return L""; }
+#endif
 
 std::string IdentityMismatch(const ExpectedIdentity& want, const ObservedIdentity& got) {
     if (!want.path.empty()) {

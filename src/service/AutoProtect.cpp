@@ -3,8 +3,20 @@
 #include <nlohmann/json.hpp>
 
 #include "CpuMath.h"
+#include "Utf8.h"
 
-namespace daemon {
+#ifndef _WIN32
+#include <poll.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include <cerrno>
+
+#include "LinuxProc.h"
+#endif
+
+namespace thd {
 
 namespace {
 
@@ -20,17 +32,57 @@ int Rank(DWORD cls) {
     return 2;
 }
 
-std::string Narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
-                                      nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
-                        nullptr);
-    return s;
-}
+std::string Narrow(const std::wstring& w) { return utf8::FromWide(w); }
 
 double Round1(double x) { return static_cast<long long>(x * 10.0 + 0.5) / 10.0; }
+
+// A pinned process: Windows holds a handle, Linux a pidfd. Either way the
+// PID cannot be mistaken for a new process before it is restored.
+#ifdef _WIN32
+HANDLE Pin(DWORD pid) {
+    return OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid);
+}
+bool Exited(HANDLE h) { return WaitForSingleObject(h, 0) == WAIT_OBJECT_0; }
+void Unpin(HANDLE h) { CloseHandle(h); }
+DWORD GetClass(HANDLE h, DWORD) { return GetPriorityClass(h); }
+bool SetClass(HANDLE h, DWORD, DWORD cls) { return SetPriorityClass(h, cls) != FALSE; }
+#else
+int Fd(HANDLE h) { return static_cast<int>(reinterpret_cast<intptr_t>(h)) - 1; }
+HANDLE Pin(DWORD pid) {
+    const long fd = syscall(SYS_pidfd_open, static_cast<pid_t>(pid), 0);
+    return fd < 0 ? nullptr : reinterpret_cast<HANDLE>(static_cast<intptr_t>(fd + 1));
+}
+bool Exited(HANDLE h) {
+    pollfd p{Fd(h), POLLIN, 0};  // a pidfd becomes readable when the process exits
+    return poll(&p, 1, 0) > 0;
+}
+void Unpin(HANDLE h) { close(Fd(h)); }
+int NiceOf(DWORD pid) {
+    errno = 0;
+    const int n = getpriority(PRIO_PROCESS, static_cast<id_t>(pid));
+    return errno == 0 ? n : 0;
+}
+DWORD ClassOfNice(int n) {
+    if (n >= 19) return IDLE_PRIORITY_CLASS;
+    if (n >= 5) return BELOW_NORMAL_PRIORITY_CLASS;
+    if (n > -5) return NORMAL_PRIORITY_CLASS;
+    if (n > -15) return ABOVE_NORMAL_PRIORITY_CLASS;
+    return HIGH_PRIORITY_CLASS;
+}
+DWORD GetClass(HANDLE, DWORD pid) { return ClassOfNice(NiceOf(pid)); }
+// nice is per thread on Linux, so every thread is set.
+bool SetNice(DWORD pid, int nice) {
+    bool any = false, failed = false;
+    for (int tid : linuxproc::Threads(static_cast<int>(pid))) {
+        if (setpriority(PRIO_PROCESS, static_cast<id_t>(tid), nice) == 0) any = true;
+        else if (errno != ESRCH) failed = true;
+    }
+    return any && !failed;
+}
+bool SetClass(HANDLE, DWORD pid, DWORD cls) {
+    return SetNice(pid, cls == IDLE_PRIORITY_CLASS ? 19 : cls == BELOW_NORMAL_PRIORITY_CLASS ? 10 : 0);
+}
+#endif
 
 }
 
@@ -85,8 +137,8 @@ void AutoProtector::Tick(const ExcludeFn& exclude) {
 
     // Forget processes that have exited (their priority no longer matters).
     for (auto it = throttled_.begin(); it != throttled_.end();) {
-        if (WaitForSingleObject(it->second.handle, 0) == WAIT_OBJECT_0) {
-            CloseHandle(it->second.handle);
+        if (Exited(it->second.handle)) {
+            Unpin(it->second.handle);
             it = throttled_.erase(it);
         } else {
             ++it;
@@ -127,7 +179,7 @@ void AutoProtector::Tick(const ExcludeFn& exclude) {
 
     // Escalate processes already throttled.
     for (auto& [pid, e] : throttled_) {
-        if (Rank(e.currentClass) > Rank(target) && SetPriorityClass(e.handle, target)) {
+        if (Rank(e.currentClass) > Rank(target) && SetClass(e.handle, e.pid, target)) {
             log_("lowered_to_idle", &e, e.currentClass, target,
                  "system CPU stayed at or above " + std::to_string(static_cast<int>(settings_.idlePercent)) + "%");
             e.currentClass = target;
@@ -158,12 +210,14 @@ void AutoProtector::Tick(const ExcludeFn& exclude) {
 }
 
 bool AutoProtector::Lower(const telemetry::ProcessTable::Row& row, DWORD targetClass) {
-    HANDLE h = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
-                           FALSE, row.pid);
+    HANDLE h = Pin(row.pid);
     if (h == nullptr) return false;
-    const DWORD original = GetPriorityClass(h);
-    if (original == 0 || Rank(original) <= Rank(targetClass) || !SetPriorityClass(h, targetClass)) {
-        CloseHandle(h);  // already low enough, or not allowed
+#ifndef _WIN32
+    const int originalNice = NiceOf(row.pid);
+#endif
+    const DWORD original = GetClass(h, row.pid);
+    if (original == 0 || Rank(original) <= Rank(targetClass) || !SetClass(h, row.pid, targetClass)) {
+        Unpin(h);  // already low enough, or not allowed
         return false;
     }
     Entry e;
@@ -171,6 +225,9 @@ bool AutoProtector::Lower(const telemetry::ProcessTable::Row& row, DWORD targetC
     e.name = row.name;
     e.handle = h;
     e.originalClass = original;
+#ifndef _WIN32
+    e.originalNice = originalNice;
+#endif
     e.currentClass = targetClass;
     e.cpuAtAction = row.cpuPercent;
     e.sinceTick = GetTickCount64();
@@ -183,11 +240,15 @@ bool AutoProtector::Lower(const telemetry::ProcessTable::Row& row, DWORD targetC
 
 void AutoProtector::Restore(std::map<DWORD, Entry>::iterator it, const std::string& reason) {
     Entry& e = it->second;
-    if (WaitForSingleObject(e.handle, 0) != WAIT_OBJECT_0) {
+    if (!Exited(e.handle)) {
+#ifdef _WIN32
         SetPriorityClass(e.handle, e.originalClass);
+#else
+        SetNice(e.pid, e.originalNice);
+#endif
         log_("restored", &e, e.currentClass, e.originalClass, reason);
     }
-    CloseHandle(e.handle);
+    Unpin(e.handle);
     throttled_.erase(it);
 }
 

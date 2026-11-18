@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "PlatformTypes.h"
 #include <cstdint>
 #include <map>
 #include <string>
@@ -68,6 +68,7 @@ private:
         uint64_t lastWallTicks = 0;
         uint64_t lastIoBytes = 0;
         bool     primed = false;
+        uint64_t startTime = 0;   // Linux: detects PID reuse
     };
 
     bool SampleInstance(DWORD pid, Instance& inst, ProcessSample& out);

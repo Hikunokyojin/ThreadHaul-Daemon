@@ -16,14 +16,14 @@ namespace {
 
 using nlohmann::json;
 
-daemon::HttpResponse Json(int status, const json& j) {
-    daemon::HttpResponse r;
+thd::HttpResponse Json(int status, const json& j) {
+    thd::HttpResponse r;
     r.status = status;
     r.body = j.dump(-1, ' ', false, json::error_handler_t::replace);
     return r;
 }
 
-daemon::HttpResponse Error(int status, const std::string& message) {
+thd::HttpResponse Error(int status, const std::string& message) {
     return Json(status, json{{"ok", false}, {"message", message}});
 }
 
@@ -55,7 +55,7 @@ FleetWeb::~FleetWeb() { Stop(); }
 
 bool FleetWeb::Start(int port, std::string& error) {
     Stop();
-    auto server = std::make_unique<daemon::HttpServer>([this](const daemon::HttpRequest& r) { return Handle(r); });
+    auto server = std::make_unique<thd::HttpServer>([this](const thd::HttpRequest& r) { return Handle(r); });
     if (!server->Start(port, error)) return false;
     server_ = std::move(server);
     port_ = port;
@@ -73,7 +73,7 @@ std::string FleetWeb::Url() {
     return "http://127.0.0.1:" + std::to_string(port_) + "/#token=" + session_.CurrentOrNewKey();
 }
 
-bool FleetWeb::HostAllowed(const daemon::HttpRequest& req, daemon::HttpResponse& res) const {
+bool FleetWeb::HostAllowed(const thd::HttpRequest& req, thd::HttpResponse& res) const {
     const std::string port = std::to_string(port_);
     const std::string host = req.Header("host");
     if (host != "127.0.0.1:" + port && host != "localhost:" + port) {
@@ -88,8 +88,8 @@ bool FleetWeb::HostAllowed(const daemon::HttpRequest& req, daemon::HttpResponse&
     return true;
 }
 
-daemon::HttpResponse FleetWeb::Handle(const daemon::HttpRequest& req) {
-    daemon::HttpResponse denied;
+thd::HttpResponse FleetWeb::Handle(const thd::HttpRequest& req) {
+    thd::HttpResponse denied;
     if (!HostAllowed(req, denied)) return denied;
     if (req.path.rfind("/api/", 0) != 0) {
         if (req.method != "GET") return Error(405, "method not allowed");
@@ -99,16 +99,16 @@ daemon::HttpResponse FleetWeb::Handle(const daemon::HttpRequest& req) {
     const std::string route = req.path.substr(7);
 
     switch (session_.Check(req.Header("x-threadhaul-token"))) {
-        case daemon::SessionGuard::Result::Ok: break;
-        case daemon::SessionGuard::Result::Locked:
+        case thd::SessionGuard::Result::Ok: break;
+        case thd::SessionGuard::Result::Locked:
             return Error(429, "too many invalid tokens; try again in a minute");
-        case daemon::SessionGuard::Result::Expired:
+        case thd::SessionGuard::Result::Expired:
             return Error(401, "session expired; type 'web' in the controller console for a new link");
         default:
             return Error(401, "missing or invalid token; type 'web' in the controller console for a link");
     }
 
-    daemon::HttpResponse res;
+    thd::HttpResponse res;
     res.headers.emplace_back("API-Version", "1");
     if (req.method == "GET" && route == "/fleet") {
         res.body = callbacks_.fleetJson();
@@ -138,7 +138,7 @@ daemon::HttpResponse FleetWeb::Handle(const daemon::HttpRequest& req) {
     return res;
 }
 
-daemon::HttpResponse FleetWeb::ServeFile(const std::string& path) {
+thd::HttpResponse FleetWeb::ServeFile(const std::string& path) {
     struct Asset { const char* path; const wchar_t* file; const char* type; };
     static const Asset assets[] = {
         {"/index.html", L"index.html", "text/html; charset=utf-8"},
@@ -148,7 +148,7 @@ daemon::HttpResponse FleetWeb::ServeFile(const std::string& path) {
     for (const Asset& a : assets) {
         if (path != a.path) continue;
         std::ifstream in(std::filesystem::path(root_) / a.file, std::ios::binary);
-        daemon::HttpResponse r;
+        thd::HttpResponse r;
         if (!in) {
             r.status = 500;
             r.contentType = "text/plain; charset=utf-8";
@@ -161,7 +161,7 @@ daemon::HttpResponse FleetWeb::ServeFile(const std::string& path) {
         r.body = ss.str();
         return r;
     }
-    daemon::HttpResponse r;
+    thd::HttpResponse r;
     r.status = 404;
     r.contentType = "text/plain; charset=utf-8";
     r.body = "Not found";

@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace daemon {
+namespace thd {
 
 // "ThreadHaulDaemon.exe selfcheck": inspects an installation and prints one
 // PASS / WARN / FAIL line per check, with what to do about each problem.

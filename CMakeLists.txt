@@ -6,7 +6,8 @@ project(ThreadHaul
     LANGUAGES CXX)
 
 if(NOT WIN32)
-    message(FATAL_ERROR "ThreadHaul uses the Win32 API and builds on Windows only.")
+    include(cmake/Linux.cmake)
+    return()
 endif()
 
 set(CMAKE_CXX_STANDARD 17)

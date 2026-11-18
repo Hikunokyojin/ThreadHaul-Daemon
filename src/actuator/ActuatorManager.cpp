@@ -1,5 +1,11 @@
 #include "ActuatorManager.h"
 
+#include <cwctype>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 namespace actuator {
 
 namespace {
@@ -11,15 +17,30 @@ namespace {
 //  - dwm.exe draws the desktop, so suspending it freezes the screen;
 //  - fontdrvhost.exe, LsaIso.exe, Memory Compression and Secure System are
 //    core user-mode and virtualisation-based-security components.
+#ifdef _WIN32
 const wchar_t* const kAlwaysProtected[] = {
     L"[System Process]", L"System", L"Registry", L"smss.exe", L"csrss.exe",
     L"wininit.exe", L"winlogon.exe", L"services.exe", L"lsass.exe",
     L"svchost.exe", L"dwm.exe", L"fontdrvhost.exe", L"LsaIso.exe",
     L"Memory Compression", L"Secure System",
 };
+#else
+// Linux: init and the daemons that keep the machine reachable and the
+// desktop drawn. Kernel threads are filtered out before this point.
+const wchar_t* const kAlwaysProtected[] = {
+    L"init", L"systemd", L"systemd-journald", L"systemd-logind", L"systemd-udevd",
+    L"systemd-networkd", L"systemd-resolved", L"dbus-daemon", L"dbus-broker",
+    L"sshd", L"Xorg", L"Xwayland", L"gnome-shell", L"kwin_wayland", L"kwin_x11",
+};
+#endif
 
 bool NamesEqualIgnoreCase(const std::wstring& a, const wchar_t* b) {
-    return CompareStringOrdinal(a.c_str(), -1, b, -1, TRUE) == CSTR_EQUAL;
+    const std::wstring other(b);
+    if (a.size() != other.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::towlower(a[i]) != std::towlower(other[i])) return false;
+    }
+    return true;
 }
 
 }
@@ -87,7 +108,12 @@ void ActuatorManager::SetProtectedProcessNames(std::vector<std::wstring> names) 
 }
 
 bool ActuatorManager::IsProtected(const std::wstring& processName, DWORD processId) const {
-    if (processId == GetCurrentProcessId()) {
+#ifdef _WIN32
+    const DWORD self = GetCurrentProcessId();
+#else
+    const DWORD self = static_cast<DWORD>(getpid());
+#endif
+    if (processId == self) {
         return true;
     }
     for (const wchar_t* name : kAlwaysProtected) {

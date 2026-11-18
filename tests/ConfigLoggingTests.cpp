@@ -771,10 +771,10 @@ void PrometheusTextFormat() {
         "signals": [{"name": "gpu", "ok": true, "value": 45, "pressure_percent": 50},
                     {"name": "broken", "ok": false, "error": "counter not found"}]
     })");
-    daemon::MetricCounters counters;
+    thd::MetricCounters counters;
     counters.actions[{"priority_lowered", "automatic"}] = 3;
     counters.logEvents["sample"] = 42;
-    const std::string text = daemon::PrometheusText(status, counters);
+    const std::string text = thd::PrometheusText(status, counters);
     auto has = [&](const std::string& s) { return text.find(s) != std::string::npos; };
     Check(has("# TYPE threadhaul_up gauge\nthreadhaul_up 1\n"), t, "up gauge");
     Check(has("threadhaul_pressure_percent 92.5\n"), t, "pressure");
@@ -804,9 +804,9 @@ void PrometheusTextFormat() {
               has("threadhaul_group_active{group=\"reports\"} 0\n"),
           t, "group metrics");
     Check(text.back() == '\n' && !has("\r"), t, "LF line endings, ends with newline");
-    Check(daemon::PrometheusLabel("a\\b\nc") == "a\\\\b\\nc", t, "backslash and newline escaped");
+    Check(thd::PrometheusLabel("a\\b\nc") == "a\\\\b\\nc", t, "backslash and newline escaped");
 
-    const std::string minimal = daemon::PrometheusText(nlohmann::json::object(), {});
+    const std::string minimal = thd::PrometheusText(nlohmann::json::object(), {});
     Check(minimal.find("threadhaul_up 1") != std::string::npos &&
               minimal.find("threadhaul_pressure_percent") == std::string::npos,
           t, "missing fields are skipped, not invented");

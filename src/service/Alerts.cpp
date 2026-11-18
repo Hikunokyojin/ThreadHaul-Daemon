@@ -1,12 +1,14 @@
 #include "Alerts.h"
 
+#ifdef _WIN32
+// Linux: src/platform/linux/LinuxAlerts.cpp.
 #include <windows.h>
 #include <winhttp.h>
 #include <wtsapi32.h>
 
 #include <thread>
 
-namespace daemon {
+namespace thd {
 
 void Alerter::Configure(bool popup, std::wstring webhookUrl) {
     popup_ = popup;
@@ -87,3 +89,5 @@ bool PostJson(const std::wstring& url, const std::string& body, std::wstring& er
 }
 
 }
+
+#endif

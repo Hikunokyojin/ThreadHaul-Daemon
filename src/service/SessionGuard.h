@@ -6,7 +6,7 @@
 #include <mutex>
 #include <string>
 
-namespace daemon {
+namespace thd {
 
 // Dashboard session: one random access key at a time, with an idle timeout,
 // an absolute lifetime, explicit sign-out and a lockout after repeated bad
@@ -25,7 +25,10 @@ public:
         std::chrono::seconds lockout{60};
     };
 
-    SessionGuard(std::function<std::string()> newKey, Limits limits = {},
+    // Two constructors rather than "Limits limits = {}": GCC does not accept
+    // a nested struct's default member initializers in a default argument.
+    explicit SessionGuard(std::function<std::string()> newKey) : SessionGuard(std::move(newKey), Limits{}) {}
+    SessionGuard(std::function<std::string()> newKey, Limits limits,
                  std::function<Clock::time_point()> now = &SteadyNow)
         : newKey_(std::move(newKey)), limits_(limits), now_(std::move(now)) {}
 

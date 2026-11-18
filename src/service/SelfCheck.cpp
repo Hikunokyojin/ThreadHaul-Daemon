@@ -1,8 +1,24 @@
 #include "SelfCheck.h"
 
+#ifdef _WIN32
 #include <windows.h>
+#define TH_CLI "ThreadHaulDaemon.exe"
+#define TH_INSTALL "re-run scripts\\install.ps1 to lock it down"
+#define TH_ELEVATE "run selfcheck from an Administrator PowerShell"
+#define TH_ADMINS "SYSTEM and Administrators"
+#else
+#include <unistd.h>
+
+#include <cerrno>
+#include <cwctype>
+#define TH_CLI "threadhauld"
+#define TH_INSTALL "make it owned by root and not group/world writable (chown root:root, chmod 600)"
+#define TH_ELEVATE "run selfcheck with sudo"
+#define TH_ADMINS "root"
+#endif
 
 #include <cstdio>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -14,8 +30,9 @@
 #include "ConfigSecurity.h"
 #include "LogChain.h"
 #include "Secrets.h"
+#include "Utf8.h"
 
-namespace daemon {
+namespace thd {
 
 namespace {
 
@@ -28,27 +45,28 @@ void Report(const char* level, const char* check, const std::string& detail) {
     std::printf("%-4s  %-26s %s\n", level, check, detail.c_str());
 }
 
-std::string Narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
-                                      nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
-                        nullptr);
-    return s;
+std::string Narrow(const std::wstring& w) { return utf8::FromWide(w); }
+
+bool SameNoCase(const std::wstring& a, const std::wstring& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::towlower(a[i]) != std::towlower(b[i])) return false;
+    }
+    return true;
 }
 
 std::string ReadAll(const std::wstring& path) {
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(std::filesystem::path(path), std::ios::binary);
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
 }
 
 bool IsLoopback(const std::wstring& host) {
-    return host == L"127.0.0.1" || host == L"::1" || _wcsicmp(host.c_str(), L"localhost") == 0;
+    return host == L"127.0.0.1" || host == L"::1" || SameNoCase(host, L"localhost");
 }
 
+#ifdef _WIN32
 void CheckServiceAccount() {
     SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     SC_HANDLE svc = scm ? OpenServiceW(scm, L"ThreadHaulDaemon", SERVICE_QUERY_CONFIG) : nullptr;
@@ -81,6 +99,32 @@ void CheckServiceAccount() {
     CloseServiceHandle(svc);
     CloseServiceHandle(scm);
 }
+#else
+// systemd unit: no User= (or User=root) means the daemon runs as root.
+void CheckServiceAccount() {
+    std::string unit;
+    for (const char* path : {"/etc/systemd/system/threadhaul.service", "/usr/lib/systemd/system/threadhaul.service",
+                             "/lib/systemd/system/threadhaul.service"}) {
+        unit = ReadAll(utf8::ToWide(path));
+        if (!unit.empty()) break;
+    }
+    if (unit.empty()) {
+        Report("INFO", "Service account", "threadhaul.service not installed; skipped");
+        return;
+    }
+    std::string user;
+    std::istringstream lines(unit);
+    for (std::string line; std::getline(lines, line);) {
+        if (line.rfind("User=", 0) == 0) user = line.substr(5);
+    }
+    if (user.empty() || user == "root") {
+        Report("INFO", "Service account",
+               "root: full control of all processes (needed to lower priorities of other users' programs)");
+    } else {
+        Report("PASS", "Service account", user + " (reduced privilege; it can only manage its own processes)");
+    }
+}
+#endif
 
 }
 
@@ -91,15 +135,19 @@ int RunSelfCheck(const std::wstring& configPath) {
     // 1. Config is present and valid. The installed config is readable only by
     // SYSTEM, Administrators and the service account, so say so plainly.
     {
+#ifdef _WIN32
         HANDLE h = CreateFileW(configPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                nullptr, OPEN_EXISTING, 0, nullptr);
-        if (h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED) {
+        const bool denied = h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_ACCESS_DENIED;
+        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+#else
+        const bool denied = access(Narrow(configPath).c_str(), R_OK) != 0 && errno == EACCES;
+#endif
+        if (denied) {
             Report("FAIL", "Config valid",
-                   "access denied (expected: the installed config is locked to Administrators); "
-                   "run selfcheck from an Administrator PowerShell");
+                   "access denied (expected: the installed config is locked to " TH_ADMINS "); " TH_ELEVATE);
             return 1;
         }
-        if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
     }
     config::DaemonConfig cfg;
     try {
@@ -115,9 +163,9 @@ int RunSelfCheck(const std::wstring& configPath) {
     std::wstring who;
     if (IsWritableByNonAdmins(configPath, who)) {
         Report("FAIL", "Config permissions",
-               Narrow(who) + " can modify it; re-run scripts\\install.ps1 to lock it down");
+               Narrow(who) + " can modify it; " TH_INSTALL);
     } else {
-        Report("PASS", "Config permissions", "writable only by SYSTEM and Administrators");
+        Report("PASS", "Config permissions", "writable only by " TH_ADMINS);
     }
 
     // 3. Secrets are not stored in plain text.
@@ -132,13 +180,13 @@ int RunSelfCheck(const std::wstring& configPath) {
     const std::string metricsToken = rawString("metrics", "token");
     if (!metricsToken.empty() && !config::IsProtectedSecret(metricsToken)) {
         Report("WARN", "Secrets encrypted",
-               "metrics.token is plain text; encrypt it with 'ThreadHaulDaemon.exe protect-secret'");
+               "metrics.token is plain text; encrypt it with '" TH_CLI " protect-secret'");
     }
     bool plainSecret = false;
     if (!token.empty() && !config::IsProtectedSecret(token)) {
         plainSecret = true;
         Report("WARN", "Secrets encrypted",
-               "coordination.shared_token is plain text; encrypt it with 'ThreadHaulDaemon.exe protect-secret'");
+               "coordination.shared_token is plain text; encrypt it with '" TH_CLI " protect-secret'");
     }
     if (!hook.empty() && !config::IsProtectedSecret(hook) && hook.find('?') != std::string::npos) {
         plainSecret = true;
@@ -179,7 +227,7 @@ int RunSelfCheck(const std::wstring& configPath) {
     size_t unpinned = 0;
     for (const auto& name : cfg.criticalProcesses) {
         bool pinned = false;
-        for (const auto& p : cfg.identities) pinned = pinned || _wcsicmp(p.name.c_str(), name.c_str()) == 0;
+        for (const auto& p : cfg.identities) pinned = pinned || SameNoCase(p.name, name);
         if (!pinned) ++unpinned;
     }
     if (unpinned > 0) {
@@ -192,15 +240,15 @@ int RunSelfCheck(const std::wstring& configPath) {
 
     // 7. Log location is protected and the log chain is intact.
     const std::wstring logDir = std::filesystem::path(cfg.logPath).parent_path().wstring();
-    if (!logDir.empty() && GetFileAttributesW(logDir.c_str()) != INVALID_FILE_ATTRIBUTES) {
+    if (!logDir.empty() && std::filesystem::exists(std::filesystem::path(logDir))) {
         if (IsWritableByNonAdmins(logDir, who)) {
             Report("WARN", "Log permissions", Narrow(who) + " can write the log folder");
         } else {
             Report("PASS", "Log permissions", "log folder not writable by ordinary users");
         }
     }
-    if (GetFileAttributesW(cfg.logPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        std::ifstream in(cfg.logPath, std::ios::binary);
+    if (std::filesystem::exists(std::filesystem::path(cfg.logPath))) {
+        std::ifstream in(std::filesystem::path(cfg.logPath), std::ios::binary);
         const auto r = logging::VerifyChain(in);
         if (!r.Ok()) {
             Report("FAIL", "Log integrity",

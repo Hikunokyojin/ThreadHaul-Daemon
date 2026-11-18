@@ -1,6 +1,8 @@
 #pragma once
 
-#include <windows.h>
+#include "PlatformTypes.h"
+
+#include <cstdint>
 #include <string>
 #include <functional>
 
@@ -88,6 +90,7 @@ private:
     std::wstring batchProcessName_;
     DWORD        batchProcessId_;
     HANDLE       processHandle_ = nullptr;
+    uint64_t     startTime_ = 0;  // Linux: /proc start time, detects PID reuse
     StateMachineConfig config_;
     TransitionCallback onTransition_;
     ProcessActions actions_;

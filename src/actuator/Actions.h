@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "PlatformTypes.h"
 
 #include <string>
 
@@ -63,6 +63,9 @@ private:
     DWORD_PTR originalAffinity_ = 0;
     bool ioChanged_ = false;
     ULONG originalIo_ = 2;          // IoPriorityNormal
+#ifndef _WIN32
+    std::string originalCgroup_;    // where the process lived before a CPU cap
+#endif
 };
 
 // Low-level helpers, exposed for tests.

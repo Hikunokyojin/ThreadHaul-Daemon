@@ -1,8 +1,10 @@
 #include "Signals.h"
 
+#ifdef _WIN32
 #include <windows.h>
 #include <pdh.h>
 #include <pdhmsg.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -17,6 +19,7 @@ std::wstring Lower(std::wstring s) {
     return s;
 }
 
+#ifdef _WIN32
 std::string PdhError(PDH_STATUS s) {
     switch (static_cast<DWORD>(s)) {
         case PDH_CSTATUS_NO_OBJECT:  return "counter object not found on this computer";
@@ -43,8 +46,11 @@ struct Signal {
     }
 };
 
+#endif
 }
 
+#ifdef _WIN32
+// Linux: src/platform/linux/LinuxSignals.cpp.
 bool BuiltInSignal(const std::string& type, SignalSpec& spec) {
     if (type == "gpu") {
         spec.counter = L"\\GPU Engine(*)\\Utilization Percentage";
@@ -70,6 +76,8 @@ bool BuiltInSignal(const std::string& type, SignalSpec& spec) {
     return false;
 }
 
+#endif
+
 bool CombineInstances(const std::vector<CounterItem>& items, Aggregate aggregate,
                       const std::wstring& instanceContains, double& out, int& used) {
     const std::wstring filter = Lower(instanceContains);
@@ -89,6 +97,7 @@ bool CombineInstances(const std::vector<CounterItem>& items, Aggregate aggregate
     return true;
 }
 
+#ifdef _WIN32
 struct SignalSet::Impl {
     std::vector<std::unique_ptr<Signal>> signals;
 };
@@ -163,5 +172,7 @@ std::vector<SignalReading> SignalSet::Sample() {
     }
     return out;
 }
+
+#endif
 
 }

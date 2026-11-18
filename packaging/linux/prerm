@@ -1,0 +1,13 @@
+#!/bin/sh
+# Before removal (.deb: "remove"/"purge"; .rpm: $1 = 0). Stopping the
+# service makes it resume and restore every process it changed. Upgrades
+# leave it running. The config and logs are kept.
+set -e
+case "$1" in
+    remove|purge|0)
+        if [ -d /run/systemd/system ]; then
+            systemctl disable --now threadhaul.service >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+exit 0

@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-namespace daemon {
+namespace thd {
 
 struct HttpRequest {
     std::string method;

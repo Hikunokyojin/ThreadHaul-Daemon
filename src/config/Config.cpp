@@ -1,7 +1,12 @@
 #include "Config.h"
 #include "Secrets.h"
 
+#include "Utf8.h"
+
+#include <cwctype>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
@@ -16,31 +21,18 @@ namespace {
 using nlohmann::json;
 
 std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) {
-        return {};
-    }
-    const int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
-                                      static_cast<int>(s.size()), nullptr, 0);
-    if (n <= 0) {
+    // nlohmann::json rejects invalid UTF-8 on parse, so a replacement
+    // character here that was not in the input means bad text slipped in.
+    std::wstring w = utf8::ToWide(s);
+    const std::string replacementUtf8{static_cast<char>(0xEF), static_cast<char>(0xBF), static_cast<char>(0xBD)};
+    const bool hadReplacement = s.find(replacementUtf8) != std::string::npos;
+    if (!hadReplacement && w.find(static_cast<wchar_t>(0xFFFD)) != std::wstring::npos) {
         throw ConfigError("config contains text that is not valid UTF-8");
     }
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(),
-                        static_cast<int>(s.size()), w.data(), n);
     return w;
 }
 
-std::string WideToUtf8(const std::wstring& w) {
-    if (w.empty()) {
-        return {};
-    }
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()),
-                                      nullptr, 0, nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n,
-                        nullptr, nullptr);
-    return s;
-}
+std::string WideToUtf8(const std::wstring& w) { return utf8::FromWide(w); }
 
 const json& Field(const json& obj, const char* key, const std::string& path) {
     const auto it = obj.find(key);
@@ -236,7 +228,15 @@ const json* OptObject(const json& obj, const char* key, const std::string& path)
 }
 
 bool SameName(const std::wstring& a, const std::wstring& b) {
+#ifdef _WIN32
     return CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+#else
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::towlower(a[i]) != std::towlower(b[i])) return false;
+    }
+    return true;
+#endif
 }
 
 // "actions" (top level or inside a group): p is the path prefix for errors.
@@ -390,23 +390,41 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
     if (const json* id = OptObject(root, "identity", "identity")) {
         for (const auto& [name, spec] : id->items()) {
             const std::string where = "identity." + name;
+#ifdef _WIN32
             if (name.size() < 5 || name.find_first_of("\\/") != std::string::npos ||
                 _stricmp(name.c_str() + name.size() - 4, ".exe") != 0) {
                 throw ConfigError(where + ": key must be an executable name such as app.exe");
             }
+#else
+            if (name.empty() || name.find('/') != std::string::npos) {
+                throw ConfigError(where + ": key must be an executable name such as app");
+            }
+#endif
             if (!spec.is_object()) throw ConfigError(where + " must be an object");
             DaemonConfig::PinnedIdentity p;
             p.name = Utf8ToWide(name);
             p.path = Utf8ToWide(OptString(spec, "path", where + ".path", ""));
             p.publisher = Utf8ToWide(OptString(spec, "publisher", where + ".publisher", ""));
+#ifndef _WIN32
+            if (!p.publisher.empty()) {
+                throw ConfigError(where + ".publisher is not supported on Linux (executables carry no "
+                                          "publisher signature); pin the path instead");
+            }
+#endif
             if (p.path.empty() && p.publisher.empty()) {
                 throw ConfigError(where + " needs a path, a publisher, or both");
             }
+#ifdef _WIN32
             if (!p.path.empty() && (p.path.size() < 3 || p.path[1] != L':' || p.path[2] != L'\\')) {
                 if (p.path.rfind(L"\\\\", 0) != 0) {
                     throw ConfigError(where + ".path must be a full path such as C:\\\\Apps\\\\app.exe");
                 }
             }
+#else
+            if (!p.path.empty() && p.path[0] != L'/') {
+                throw ConfigError(where + ".path must be a full path such as /usr/bin/app");
+            }
+#endif
             cfg.identities.push_back(std::move(p));
         }
     }
@@ -489,9 +507,16 @@ DaemonConfig ParseConfig(const std::string& jsonText) {
             sc.instanceContains = Utf8ToWide(OptString(s, "instance_contains", where + ".instance_contains", ""));
             if (sc.type == "counter") {
                 sc.counter = Utf8ToWide(OptString(s, "counter", where + ".counter", ""));
+#ifdef _WIN32
                 if (sc.counter.size() < 4 || sc.counter[0] != L'\\' || sc.counter.find(L'\\', 1) == std::wstring::npos) {
                     throw ConfigError(where + ".counter must be a counter path such as \\Processor(_Total)\\% Processor Time");
                 }
+#else
+                if (sc.counter != L"pressure:cpu" && sc.counter != L"pressure:memory" && sc.counter != L"pressure:io" &&
+                    sc.counter.rfind(L"file:/", 0) != 0) {
+                    throw ConfigError(where + ".counter must be pressure:cpu, pressure:memory, pressure:io or file:/path");
+                }
+#endif
                 sc.scale = OptNumber(s, "scale", where + ".scale", 1e-15, 1e15, 1.0);
             } else if (s.contains("counter") || s.contains("scale")) {
                 throw ConfigError(where + ": counter and scale apply only to type \"counter\"");
