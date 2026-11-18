@@ -1,7 +1,9 @@
 #include "Dashboard.h"
 
-#include <windows.h>
-#include <bcrypt.h>
+#include <cwctype>
+
+#include "SecureChannel.h"
+#include "Utf8.h"
 
 #include <nlohmann/json.hpp>
 
@@ -13,30 +15,23 @@
 #include "ActuatorManager.h"
 #include "Daemon.h"
 
-namespace daemon {
+namespace thd {
 
 namespace {
 
 using nlohmann::json;
 
-std::string Narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
-                                      nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
-                        nullptr);
-    return s;
-}
+std::string Narrow(const std::wstring& w) { return utf8::FromWide(w); }
 
 std::string RandomToken() {
-    unsigned char bytes[24] = {};
-    if (BCryptGenRandom(nullptr, bytes, sizeof(bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+    const std::string bytes = securechannel::RandomBytes(24);
+    if (bytes.size() != 24) {
         std::abort();  // never hand out a predictable dashboard key
     }
     static const char* hex = "0123456789abcdef";
     std::string t;
-    for (unsigned char b : bytes) {
+    for (char c : bytes) {
+        const unsigned char b = static_cast<unsigned char>(c);
         t += hex[b >> 4];
         t += hex[b & 15];
     }
@@ -64,9 +59,18 @@ HttpResponse Error(int status, const std::string& message) {
 }
 
 Dashboard::Dashboard(Daemon& daemon) : daemon_(daemon), session_(RandomToken) {
+#ifdef _WIN32
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     root_ = (std::filesystem::path(exe).parent_path() / L"dashboard").wstring();
+#else
+    // A dashboard/ folder beside the binary (a build tree) wins; packages
+    // install the pages under /usr/share/threadhaul/dashboard.
+    std::error_code ec;
+    const auto local = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path() / "dashboard";
+    root_ = utf8::ToWide(!ec && std::filesystem::is_directory(local, ec) ? local.string()
+                                                                         : "/usr/share/threadhaul/dashboard");
+#endif
     table_.SetEssentialNames(actuator::ActuatorManager::AlwaysProtectedNames());
     telemetry::ProcessTable::System primed;
     table_.Sample(primed);  // first sample sets the baseline for CPU deltas
@@ -285,7 +289,7 @@ HttpResponse Dashboard::Processes() {
 
     // ProcessRolesJson lists every name in lower case.
     auto lower = [](std::wstring w) {
-        CharLowerBuffW(w.data(), static_cast<DWORD>(w.size()));
+        for (auto& c : w) c = static_cast<wchar_t>(std::towlower(c));
         return Narrow(w);
     };
     auto inList = [&](const json& list, const std::string& name) {

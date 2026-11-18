@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace daemon {
+namespace thd {
 
 // Cumulative counters since the service started, for Prometheus.
 struct MetricCounters {

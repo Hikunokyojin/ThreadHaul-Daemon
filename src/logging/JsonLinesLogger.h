@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "PlatformTypes.h"
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -53,7 +53,11 @@ private:
     int maxRotatedFiles_;
 
     std::mutex mutex_;
+#ifdef _WIN32
     HANDLE file_ = INVALID_HANDLE_VALUE;
+#else
+    int file_ = -1;
+#endif
     uint64_t currentSize_ = 0;
     std::string lastHash_;  // hash chain head (see LogChain.h)
 };

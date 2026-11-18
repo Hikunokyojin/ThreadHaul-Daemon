@@ -1,46 +1,40 @@
 #include "Coordination.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
+#include "NetCompat.h"
+#include "ServiceCompat.h"
+#include "Utf8.h"
+
+#ifndef _WIN32
+#include <netdb.h>
+#include <unistd.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
 #include "SecureChannel.h"
 
 #include <chrono>
+#include <cstring>
 
-namespace daemon {
+namespace thd {
 
 namespace {
 
-std::string Narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
-                                      nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr,
-                        nullptr);
-    return s;
-}
-
-bool SendAll(SOCKET s, const std::string& line) {
-    const std::string data = line + "\n";
-    size_t sent = 0;
-    while (sent < data.size()) {
-        const int n = send(s, data.data() + sent, static_cast<int>(data.size() - sent), 0);
-        if (n == SOCKET_ERROR) return false;
-        sent += static_cast<size_t>(n);
-    }
-    return true;
-}
+std::string Narrow(const std::wstring& w) { return utf8::FromWide(w); }
 
 }
 
 std::string LocalHostName() {
+#ifdef _WIN32
     wchar_t name[MAX_COMPUTERNAME_LENGTH + 1];
     DWORD size = ARRAYSIZE(name);
     return GetComputerNameW(name, &size) ? Narrow(name) : "unknown";
+#else
+    char name[256] = {};
+    if (gethostname(name, sizeof(name) - 1) != 0 || !name[0]) return "unknown";
+    const char* dot = std::strchr(name, '.');  // the short name, as Windows reports
+    return dot ? std::string(name, static_cast<size_t>(dot - name)) : std::string(name);
+#endif
 }
 
 CoordinationClient::CoordinationClient(StatusFn status, CommandFn command, LogFn log)
@@ -74,28 +68,39 @@ void CoordinationClient::SendEvent(const std::string& eventJson) {
 }
 
 void CoordinationClient::Loop() {
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    if (!netcompat::Startup()) {
         log_("coordination_error", "WSAStartup failed");
         return;
     }
     int backoffMs = 1000;
     while (!stopping_) {
+#ifdef _WIN32
         addrinfoW hints{};
+        addrinfoW* result = nullptr;
+#define TH_GETADDRINFO GetAddrInfoW(host_.c_str(), std::to_wstring(port_).c_str(), &hints, &result)
+#define TH_FREEADDRINFO FreeAddrInfoW(result)
+        using Addr = addrinfoW;
+#else
+        addrinfo hints{};
+        addrinfo* result = nullptr;
+        const std::string hostA = Narrow(host_), portA = std::to_string(port_);
+#define TH_GETADDRINFO getaddrinfo(hostA.c_str(), portA.c_str(), &hints, &result)
+#define TH_FREEADDRINFO freeaddrinfo(result)
+        using Addr = addrinfo;
+#endif
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         hints.ai_protocol = IPPROTO_TCP;
-        addrinfoW* result = nullptr;
         SOCKET sock = INVALID_SOCKET;
-        if (GetAddrInfoW(host_.c_str(), std::to_wstring(port_).c_str(), &hints, &result) == 0) {
-            for (addrinfoW* a = result; a && sock == INVALID_SOCKET; a = a->ai_next) {
+        if (TH_GETADDRINFO == 0) {
+            for (Addr* a = result; a && sock == INVALID_SOCKET; a = a->ai_next) {
                 sock = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
                 if (sock != INVALID_SOCKET && connect(sock, a->ai_addr, static_cast<int>(a->ai_addrlen)) != 0) {
                     closesocket(sock);
                     sock = INVALID_SOCKET;
                 }
             }
-            FreeAddrInfoW(result);
+            TH_FREEADDRINFO;
         }
 
         if (sock != INVALID_SOCKET) {
@@ -118,7 +123,7 @@ void CoordinationClient::Loop() {
         }
         backoffMs = std::min(backoffMs * 2, 30000);
     }
-    WSACleanup();
+    netcompat::Cleanup();
 }
 
 bool CoordinationClient::Session(unsigned long long rawSock) {

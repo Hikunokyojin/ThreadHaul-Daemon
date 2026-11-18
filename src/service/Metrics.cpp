@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <set>
 
-namespace daemon {
+namespace thd {
 
 namespace {
 

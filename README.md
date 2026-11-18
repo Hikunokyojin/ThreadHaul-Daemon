@@ -26,6 +26,7 @@ Everything is visible and controllable from a built-in **web dashboard**, record
 - [Quick start](#quick-start)
 - [Building from source](#building-from-source)
 - [Installation](#installation)
+- [Linux](#linux)
 - [Using ThreadHaul](#using-threadhaul)
 - [Configuration](#configuration)
 - [Logs and monitoring](#logs-and-monitoring)
@@ -258,6 +259,55 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall.ps1 -RemoveData  # 
 ```
 
 `--allow-unelevated` limits it to processes owned by your own account. A standard user can't write to `C:\ProgramData`, so for an unelevated run, set `logging.log_path` to a writable file such as `"threadhaul.jsonl"`. To stop, press **Ctrl+C** or run `ThreadHaulDaemon.exe stop`; either way every managed process is restored.
+
+## Linux
+
+ThreadHaul also runs on Linux as a systemd service, `threadhauld`. The decision logic (thresholds, state machine, auto-protect, adaptive thresholds, schedules, dashboard, metrics, controller link and log) is the same code as on Windows; only the platform layer in `src/platform/linux` differs. It needs a kernel with cgroup v2 (any current distribution) and runs as root.
+
+**Build** (g++ 11 or later, CMake 3.20, OpenSSL):
+
+```sh
+sudo apt install g++ cmake libssl-dev        # Debian/Ubuntu; dnf install gcc-c++ cmake openssl-devel on Fedora
+cmake -S . -B build && cmake --build build -j
+ctest --test-dir build                        # service and engine tests; run as root to include the cgroup tests
+```
+
+**Install:**
+
+```sh
+sudo cmake --install build --prefix /usr
+sudo install -d -m 700 /etc/threadhaul
+sudo install -m 600 /usr/share/threadhaul/config.example.json /etc/threadhaul/config.json   # then edit it
+sudo systemctl daemon-reload && sudo systemctl enable --now threadhaul
+sudo threadhauld status
+```
+
+The unit (`packaging/linux/threadhaul.service`) uses `Type=notify`, so `systemctl start` waits until the daemon is monitoring and fails with the reason in the journal if the configuration is rejected. On `systemctl stop` every process it changed is resumed and restored first. The unit is sandboxed: read-only system, private `/tmp`, no new privileges, writes only to `/etc/threadhaul`, `/var/log/threadhaul` and the cgroup tree.
+
+**How the actions map:**
+
+| Windows | Linux |
+|---|---|
+| Idle / Below normal priority class | nice 19 / nice 10, on every thread |
+| Very low / Low I/O priority | idle I/O class / best-effort level 7 |
+| Suspend every thread | `SIGSTOP` / `SIGCONT` (cannot be caught or ignored) |
+| Core affinity | `sched_setaffinity` on every thread |
+| Job Object CPU rate cap | cgroup v2 group with `cpu.max`; the process is moved back and the group removed on restore |
+| Handle held on auto-protected processes | `pidfd`, so a reused PID is never touched |
+| Windows Event Log | syslog/journald as `threadhauld`, with the same event IDs (`journalctl -t threadhauld`) |
+| Control pipe | Unix socket `/run/threadhaul/control.sock`, mode 0600 in a 0700 folder; root or the daemon's own user only |
+| `dpapi:` secrets | `sealed:` secrets: AES-256-GCM under a random machine key in `/etc/threadhaul/secret.key` (0600). Create them with `threadhauld protect-secret` |
+| Config ACL check | the config and its folder must be changeable only by root |
+
+**Differences to know:**
+
+- Configure executable names exactly as the file is named, without `.exe` (`postgres`, not `postgres.exe` or `Postgres`). A `service` condition names a systemd unit.
+- `identity` pins take a full path (`/usr/lib/postgresql/16/bin/postgres`). Linux executables carry no publisher signature, so a `publisher` pin is rejected at load time.
+- Built-in signals read kernel files: `disk_queue` is the I/Os in flight on whole disks, `network` the bytes per second over every interface but loopback, `gpu` each card's `gpu_busy_percent`. A `counter` signal takes `pressure:cpu`, `pressure:memory` or `pressure:io` (the kernel's pressure-stall figure, a direct measure of how long tasks wait for the resource), or `file:/path` for any number in a file, where a `*` in the path makes each match one instance.
+- `alerts.popup` writes a high-priority journal entry (`journalctl -p alert`), since a system service has no desktop to draw on. Webhooks work as on Windows, with certificate and host-name checks.
+- Linux reports a process's exit code only to its parent, so every exit is logged as `exited`, never `crashed`.
+- `threadhauld dashboard` prints the keyed link rather than opening a browser as root.
+- The controller and `.deb`/`.rpm` packages are Windows-only for now.
 
 ## Using ThreadHaul
 
@@ -669,12 +719,16 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 │  ├─ logging/       JSON Lines logger with rotation; Windows Event Log writer
 │  ├─ service/       entry point (service, console, CLI), poll loop, control pipe,
 │  │                 dashboard HTTP server and API, auto-protect, alerts, controller client
+│  ├─ common/        encrypted channel, UTF-8, socket and Win32-compatibility helpers
+│  ├─ platform/linux/  /proc telemetry, Linux actions, control socket, signals, alerts
 │  └─ controller/    central controller for multi-server deployments
 ├─ web/dashboard/    dashboard front end (HTML/CSS/JS, no build step, no external libraries)
 ├─ tests/            unit tests (state machine, telemetry and policies, configuration and logging)
 ├─ tools/            test workloads (critical/batch simulators) and log_viewer.py
 ├─ scripts/          install.ps1, uninstall.ps1
-├─ config/           config.example.json
+├─ config/           config.example.json, config.linux.example.json
+├─ packaging/linux/  systemd unit
+├─ cmake/            Linux build
 ├─ third_party/      nlohmann/json (MIT)
 ├─ CMakeLists.txt, CMakePresets.json, build.cmd
 └─ .github/          CI and release workflows, issue and pull request templates
@@ -710,7 +764,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Known limitations
 
-- **Windows only.** The project is built on Win32 process, thread and service APIs.
+- **Linux runs the service only.** The controller and Linux packages are Windows-only for now; see [Linux](#linux) for the platform differences.
 - **Foreground apps aren't detected.** A background service can't reliably tell which window you're using, so a heavy foreground application can be chosen by auto-protect. Mark such programs **Protected**, or raise `min_process_cpu_percent`.
 - **Thread suspension is a snapshot.** A thread created in the instant after the snapshot isn't suspended in that pass. Resuming always takes a fresh snapshot, so nothing is left suspended.
 - **Priority classes are coarse.** On machines with many idle cores, a throttled program may not visibly slow down, because there is capacity for everyone. That is the intended behaviour.

@@ -1,0 +1,44 @@
+[Unit]
+Description=ThreadHaul - keeps latency-critical workloads responsive under CPU pressure
+Documentation=https://github.com/Hikunokyojin/ThreadHaul-Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/sbin/threadhauld --config /etc/threadhaul/config.json
+# On stop the daemon resumes and restores every process it changed first.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=5
+
+# Runs as root: lowering another user's priority, SIGSTOP/SIGCONT and cgroup
+# CPU caps all need it. Everything else is locked down.
+RuntimeDirectory=threadhaul
+RuntimeDirectoryMode=0700
+LogsDirectory=threadhaul
+LogsDirectoryMode=0750
+ConfigurationDirectory=threadhaul
+ConfigurationDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/threadhaul /var/log/threadhaul /sys/fs/cgroup
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -177,7 +177,7 @@ void OversizedFrameRejected() {
 }
 
 void DashboardSessions() {
-    using G = daemon::SessionGuard;
+    using G = thd::SessionGuard;
     using namespace std::chrono;
     const char* t = "DashboardSessions";
     G::Clock::time_point now{};

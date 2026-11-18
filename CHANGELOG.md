@@ -10,8 +10,11 @@ All notable changes to this project are documented here. The format follows
 
 - **Fleet web UI** on the controller, at `http://127.0.0.1:7879`, with `--web-port` and `--no-web` options. It shows every connected server's pressure, thresholds, cluster bias and batch processes live, with buttons for throttle, suspend, resume, release, exempt and status on one server or all of them, and a feed of command results. It is loopback only and uses the dashboard's expiring, revocable session key and lockout. Commands are validated before sending. The `web` console command prints a fresh link.
 
+- **Linux service.** `threadhauld` runs the same monitoring, throttling, suspension, auto-protect, dashboard, metrics, controller link and log on Linux, as a sandboxed systemd service (`Type=notify`). Actions map to nice values, I/O classes, `SIGSTOP`/`SIGCONT`, CPU affinity and cgroup v2 CPU caps. Events go to journald, the control channel is a root-only Unix socket, and secrets are sealed with a machine key. New `pressure:` and `file:` signal sources read the kernel's pressure-stall figures and any numeric file. Build with CMake; the README's "Linux" section covers installation and the differences.
+
 ### Changed
 
+- The dashboard's listening socket can be re-bound immediately after a restart on Linux.
 - The controller's console output is unbuffered, so it appears immediately when redirected to a file or pipe.
 - `scripts/winget-manifest.ps1` writes manifest schema 1.28.0.
 

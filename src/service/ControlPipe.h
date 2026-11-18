@@ -1,15 +1,22 @@
 #pragma once
 
-#include <windows.h>
+#include "ServiceCompat.h"
 
 #include <atomic>
 #include <functional>
 #include <string>
 #include <thread>
 
-namespace daemon {
+namespace thd {
 
+#ifdef _WIN32
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\ThreadHaulDaemon";
+#else
+// Linux: a Unix socket in a root-only directory. The socket is mode 0600 and
+// the server also checks the caller's user id (root or the daemon's own).
+// THREADHAUL_CONTROL_SOCKET overrides the path (tests).
+constexpr char kControlSocketPath[] = "/run/threadhaul/control.sock";
+#endif
 
 // Local control channel used by the CLI override. One request line in, one
 // response (JSON) out, per connection. The pipe's DACL admits only SYSTEM,

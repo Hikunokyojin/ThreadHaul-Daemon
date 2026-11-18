@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace daemon {
+namespace thd {
 
 // Config tamper protection. The installer locks config.json down to
 // SYSTEM + Administrators (write) and the service account (read). At every

@@ -41,13 +41,13 @@ public:
     std::string Url();
 
 private:
-    daemon::HttpResponse Handle(const daemon::HttpRequest& req);
-    daemon::HttpResponse ServeFile(const std::string& path);
-    bool HostAllowed(const daemon::HttpRequest& req, daemon::HttpResponse& res) const;
+    thd::HttpResponse Handle(const thd::HttpRequest& req);
+    thd::HttpResponse ServeFile(const std::string& path);
+    bool HostAllowed(const thd::HttpRequest& req, thd::HttpResponse& res) const;
 
     Callbacks callbacks_;
-    std::unique_ptr<daemon::HttpServer> server_;
-    daemon::SessionGuard session_;
+    std::unique_ptr<thd::HttpServer> server_;
+    thd::SessionGuard session_;
     std::wstring root_;
     int port_ = 0;
 };

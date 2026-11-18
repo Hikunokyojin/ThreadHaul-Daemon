@@ -7,7 +7,7 @@
 #include "ProcessTable.h"
 #include "SessionGuard.h"
 
-namespace daemon {
+namespace thd {
 
 class Daemon;
 

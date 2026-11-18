@@ -7,7 +7,7 @@
 #include <string>
 #include <thread>
 
-namespace daemon {
+namespace thd {
 
 // Agent side of multi-server coordination. Each dispatch server's daemon
 // keeps one TCP connection to the central controller (ThreadHaulController)

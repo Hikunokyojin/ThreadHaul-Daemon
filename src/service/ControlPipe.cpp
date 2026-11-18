@@ -1,10 +1,12 @@
 #include "ControlPipe.h"
 
+#ifdef _WIN32
+// Linux: src/platform/linux/LinuxControlSocket.cpp.
 #include <sddl.h>
 
 #include <vector>
 
-namespace daemon {
+namespace thd {
 
 namespace {
 
@@ -128,3 +130,5 @@ bool SendControlRequest(const std::string& request, std::string& response, DWORD
 }
 
 }
+
+#endif

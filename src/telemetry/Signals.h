@@ -15,6 +15,14 @@ namespace telemetry {
 // Counter paths use the English names (PdhAddEnglishCounter), so a config
 // works on any Windows display language. No code is loaded: a signal is
 // data, which keeps a privileged service free of third-party plugins.
+//
+// Linux reads kernel files instead. Built-ins: gpu = gpu_busy_percent of
+// each DRM card (summed, or the highest with "aggregate": "max"); disk_queue = I/Os in flight on whole
+// disks (/proc/diskstats); network = bytes per second over every interface
+// but loopback (/proc/net/dev). A "counter" signal names its source as
+// "pressure:cpu", "pressure:memory" or "pressure:io" (the kernel's pressure
+// stall figure, some avg10, in %), or "file:/path" (a number; a * in the
+// path makes each match one instance).
 
 enum class Aggregate { Sum, Max };
 

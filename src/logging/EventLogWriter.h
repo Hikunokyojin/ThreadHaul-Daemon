@@ -1,6 +1,13 @@
 #pragma once
 
-#include <windows.h>
+#include "PlatformTypes.h"
+
+#ifndef _WIN32
+using WORD = unsigned short;
+constexpr WORD EVENTLOG_ERROR_TYPE = 0x0001;
+constexpr WORD EVENTLOG_WARNING_TYPE = 0x0002;
+constexpr WORD EVENTLOG_INFORMATION_TYPE = 0x0004;
+#endif
 #include <cstdint>
 #include <string>
 
@@ -8,6 +15,9 @@
 
 namespace logging {
 
+// Linux: the same entries go to syslog (and so to journald) as
+// "threadhauld", with the event ID in the text and the matching severity.
+//
 // Writes actuator state changes to the Windows Application event log under
 // the source "ThreadHaulDaemon". Event IDs: 1000 throttled, 1001 suspended,
 // 1002 recovered. Suspensions and failed actuations are logged as warnings.

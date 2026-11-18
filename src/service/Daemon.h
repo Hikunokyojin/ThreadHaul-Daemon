@@ -1,6 +1,6 @@
 #pragma once
 
-#include <windows.h>
+#include "ServiceCompat.h"
 
 #include <map>
 #include <memory>
@@ -27,7 +27,7 @@
 #include "Signals.h"
 #include "ThresholdTracker.h"
 
-namespace daemon {
+namespace thd {
 
 // The integrated monitor: Telemetry samples the critical processes, their
 // combined pressure (CPU, plus memory/I-O when enabled) drives one Actuator

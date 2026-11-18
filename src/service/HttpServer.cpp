@@ -1,12 +1,11 @@
 #include "HttpServer.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "NetCompat.h"
 
 #include <algorithm>
 #include <cctype>
 
-namespace daemon {
+namespace thd {
 
 namespace {
 
@@ -31,7 +30,7 @@ const char* StatusText(int status) {
 void SendAll(SOCKET s, const std::string& data) {
     size_t sent = 0;
     while (sent < data.size()) {
-        const int n = send(s, data.data() + sent, static_cast<int>(data.size() - sent), 0);
+        const int n = send(s, data.data() + sent, static_cast<int>(data.size() - sent), TH_SEND_FLAGS);
         if (n == SOCKET_ERROR) return;
         sent += static_cast<size_t>(n);
     }
@@ -72,29 +71,26 @@ std::string HttpRequest::QueryParam(const std::string& name) const {
 
 bool HttpServer::Start(int port, std::string& error) {
     Stop();
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+    if (!netcompat::Startup()) {
         error = "WSAStartup failed";
         return false;
     }
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) {
         error = "socket() failed";
-        WSACleanup();
+        netcompat::Cleanup();
         return false;
     }
-    BOOL exclusive = TRUE;
-    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive),
-               sizeof(exclusive));
+    netcompat::ExclusivePort(s);
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<u_short>(port));
+    addr.sin_port = htons(static_cast<uint16_t>(port));
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);  // loopback only
     if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(s, 16) != 0) {
         error = "cannot listen on 127.0.0.1:" + std::to_string(port) + " (error " +
-                std::to_string(WSAGetLastError()) + "; is the port in use?)";
+                std::to_string(netcompat::LastError()) + "; is the port in use?)";
         closesocket(s);
-        WSACleanup();
+        netcompat::Cleanup();
         return false;
     }
     listener_ = static_cast<unsigned long long>(s);
@@ -112,7 +108,7 @@ void HttpServer::Stop() {
     thread_.join();
     closesocket(static_cast<SOCKET>(listener_));
     listener_ = ~0ull;
-    WSACleanup();
+    netcompat::Cleanup();
 }
 
 void HttpServer::Loop() {
@@ -122,16 +118,14 @@ void HttpServer::Loop() {
         FD_ZERO(&set);
         FD_SET(listener, &set);
         timeval tv{0, 200 * 1000};
-        if (select(0, &set, nullptr, nullptr, &tv) <= 0) {
+        if (select(static_cast<int>(listener) + 1, &set, nullptr, nullptr, &tv) <= 0) {
             continue;
         }
         SOCKET client = accept(listener, nullptr, nullptr);
         if (client == INVALID_SOCKET) {
             continue;
         }
-        DWORD timeout = 3000;
-        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout),
-                   sizeof(timeout));
+        netcompat::SetRecvTimeout(client, 3000);
         Serve(static_cast<unsigned long long>(client));
         closesocket(client);
     }
