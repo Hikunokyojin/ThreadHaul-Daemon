@@ -18,7 +18,7 @@ jobs:
     name: Build and test (CMake, MSVC)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure
         run: cmake --preset windows-msvc
@@ -34,7 +34,7 @@ jobs:
     # The oldest supported LTS, so the packages install on 22.04 and later.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ cmake libssl-dev rpm
@@ -78,7 +78,7 @@ jobs:
     name: Build and test (build.cmd)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and run unit tests
         shell: cmd
@@ -96,7 +96,7 @@ jobs:
     name: Static analysis (MSVC /analyze)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # THREADHAUL_ANALYZE adds /analyze /WX: any finding fails the build.
       - name: Configure with /analyze
@@ -109,7 +109,7 @@ jobs:
     name: Robustness tests (long run)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build
         shell: cmd
@@ -129,7 +129,7 @@ jobs:
     name: Lint scripts and dashboard
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: PowerShell scripts parse cleanly
         shell: powershell
