@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(ThreadHaul
-    VERSION 2.2.0
-    DESCRIPTION "Windows service that keeps latency-critical workloads responsive under CPU pressure"
+    VERSION 2.3.0
+    DESCRIPTION "Service for Windows and Linux that keeps latency-critical workloads responsive under CPU pressure"
     LANGUAGES CXX)
 
 if(NOT WIN32)
