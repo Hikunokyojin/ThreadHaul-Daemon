@@ -29,6 +29,51 @@ jobs:
       - name: Test
         run: ctest --preset release
 
+  linux:
+    name: Build, test and package (Linux)
+    # The oldest supported LTS, so the packages install on 22.04 and later.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ cmake libssl-dev rpm
+
+      - name: Build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # As root the engine tests also cover cgroup CPU caps.
+      - name: Engine tests as root
+        run: sudo build/tests/LinuxEngineTests
+
+      - name: Build packages
+        run: cd build && cpack -G DEB && cpack -G RPM
+
+      - name: Install the .deb and run it
+        run: |
+          sudo apt-get install -y ./build/threadhaul_*.deb
+          sudo threadhauld validate-config /etc/threadhaul/config.json
+          sudo threadhauld --console --config /etc/threadhaul/config.json &
+          sleep 3
+          sudo threadhauld status | tee status.json
+          grep -q '"ok":true' status.json
+          sudo threadhauld stop
+          sudo apt-get remove -y threadhaul
+          test -e /etc/threadhaul/config.json
+
+      - name: Check the .rpm
+        run: rpm -qpl build/threadhaul-*.rpm | grep -q /usr/sbin/threadhauld
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            build/threadhaul_*.deb
+            build/threadhaul-*.rpm
+
   build-script:
     name: Build and test (build.cmd)
     runs-on: windows-latest

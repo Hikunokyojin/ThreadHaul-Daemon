@@ -77,3 +77,44 @@ install(DIRECTORY web/dashboard/ DESTINATION ${CMAKE_INSTALL_DATADIR}/threadhaul
 install(FILES packaging/linux/threadhaul.service DESTINATION lib/systemd/system)
 install(FILES config/config.linux.example.json DESTINATION ${CMAKE_INSTALL_DATADIR}/threadhaul
         RENAME config.example.json)
+install(FILES LICENSE README.md DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/threadhaul)
+install(FILES third_party/nlohmann/LICENSE.MIT DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/threadhaul
+        RENAME nlohmann-json-LICENSE.MIT)
+
+# Packages: cpack -G DEB / cpack -G RPM (from the build folder). Both
+# install to /usr, ship the systemd unit, and create /etc/threadhaul/config.json
+# from the example on first install; the service is enabled by the admin.
+set(CPACK_PACKAGE_NAME threadhaul)
+set(CPACK_PACKAGE_VENDOR "ThreadHaul")
+set(CPACK_PACKAGE_CONTACT "https://github.com/Hikunokyojin/ThreadHaul-Daemon/issues")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Keeps latency-critical workloads responsive under CPU pressure")
+set(CPACK_PACKAGE_DESCRIPTION
+    "ThreadHaul watches critical processes and, when they are short of CPU, lowers the priority of or pauses batch processes, restoring them when the pressure passes. Runs as a systemd service with a local web dashboard.")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/Hikunokyojin/ThreadHaul-Daemon")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGING_INSTALL_PREFIX /usr)
+set(CPACK_RESOURCE_FILE_LICENSE ${CMAKE_SOURCE_DIR}/LICENSE)
+set(CPACK_STRIP_FILES ON)
+
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+set(CPACK_DEBIAN_PACKAGE_SECTION admin)
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "systemd")
+set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
+    ${CMAKE_SOURCE_DIR}/packaging/linux/postinst
+    ${CMAKE_SOURCE_DIR}/packaging/linux/prerm
+    ${CMAKE_SOURCE_DIR}/packaging/linux/postrm)
+set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION ON)
+
+set(CPACK_RPM_FILE_NAME RPM-DEFAULT)
+set(CPACK_RPM_PACKAGE_LICENSE "Apache-2.0")
+set(CPACK_RPM_PACKAGE_GROUP "System Environment/Daemons")
+set(CPACK_RPM_PACKAGE_AUTOREQ ON)
+set(CPACK_RPM_PACKAGE_REQUIRES "systemd")
+set(CPACK_RPM_POST_INSTALL_SCRIPT_FILE ${CMAKE_SOURCE_DIR}/packaging/linux/postinst)
+set(CPACK_RPM_PRE_UNINSTALL_SCRIPT_FILE ${CMAKE_SOURCE_DIR}/packaging/linux/prerm)
+set(CPACK_RPM_POST_UNINSTALL_SCRIPT_FILE ${CMAKE_SOURCE_DIR}/packaging/linux/postrm)
+# Directories every system already owns.
+set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION /usr/lib/systemd /usr/lib/systemd/system /usr/share/doc)
+
+include(CPack)

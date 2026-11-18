@@ -1,0 +1,6 @@
+#!/bin/sh
+# After removal: forget the unit file.
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+exit 0

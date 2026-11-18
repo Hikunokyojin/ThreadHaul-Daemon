@@ -272,7 +272,18 @@ cmake -S . -B build && cmake --build build -j
 ctest --test-dir build                        # service and engine tests; run as root to include the cgroup tests
 ```
 
-**Install:**
+**Install from a package.** Each release has a `.deb` (Ubuntu 22.04 and later, Debian 12 and later) and an `.rpm` (Fedora, RHEL 9 and compatible). The package creates `/etc/threadhaul/config.json` from the example, mode 0600, and leaves the service stopped so you can edit the config first:
+
+```sh
+sudo apt install ./threadhaul_<version>_amd64.deb          # or: sudo dnf install ./threadhaul-<version>.x86_64.rpm
+sudoedit /etc/threadhaul/config.json
+sudo systemctl enable --now threadhaul
+sudo threadhauld status
+```
+
+Upgrades restart a running service; removing the package stops it first, which restores every process it changed, and keeps the config. Build the packages yourself with `cd build && cpack -G DEB` (or `-G RPM`, which needs `rpm`).
+
+**Install from a build:**
 
 ```sh
 sudo cmake --install build --prefix /usr
@@ -307,7 +318,7 @@ The unit (`packaging/linux/threadhaul.service`) uses `Type=notify`, so `systemct
 - `alerts.popup` writes a high-priority journal entry (`journalctl -p alert`), since a system service has no desktop to draw on. Webhooks work as on Windows, with certificate and host-name checks.
 - Linux reports a process's exit code only to its parent, so every exit is logged as `exited`, never `crashed`.
 - `threadhauld dashboard` prints the keyed link rather than opening a browser as root.
-- The controller and `.deb`/`.rpm` packages are Windows-only for now.
+- The controller is Windows-only for now; Linux servers can report to it.
 
 ## Using ThreadHaul
 
@@ -764,7 +775,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Known limitations
 
-- **Linux runs the service only.** The controller and Linux packages are Windows-only for now; see [Linux](#linux) for the platform differences.
+- **Linux runs the service only.** The controller is Windows-only for now; see [Linux](#linux) for the platform differences.
 - **Foreground apps aren't detected.** A background service can't reliably tell which window you're using, so a heavy foreground application can be chosen by auto-protect. Mark such programs **Protected**, or raise `min_process_cpu_percent`.
 - **Thread suspension is a snapshot.** A thread created in the instant after the snapshot isn't suspended in that pass. Resuming always takes a fresh snapshot, so nothing is left suspended.
 - **Priority classes are coarse.** On machines with many idle cores, a throttled program may not visibly slow down, because there is capacity for everyone. That is the intended behaviour.

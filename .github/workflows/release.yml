@@ -149,3 +149,35 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create $env:TAG $env:ZIP "$env:ZIP.sha256" $env:MSIOUT "$env:MSIOUT.sha256" --title "ThreadHaul $env:TAG" --notes-file release-notes.md
+
+  linux:
+    name: Linux packages
+    needs: release
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ cmake libssl-dev rpm
+
+      - name: Build and test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+          ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          cd build
+          cpack -G DEB -D CPACK_PACKAGE_VERSION="${TAG#v}"
+          cpack -G RPM -D CPACK_PACKAGE_VERSION="${TAG#v}"
+          for f in threadhaul_*.deb threadhaul-*.rpm; do sha256sum "$f" > "$f.sha256"; done
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" build/threadhaul_*.deb build/threadhaul-*.rpm build/*.sha256 --clobber

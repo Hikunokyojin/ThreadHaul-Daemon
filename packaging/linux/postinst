@@ -1,0 +1,16 @@
+#!/bin/sh
+# After install or upgrade (.deb: "configure"; .rpm: $1 = 1 or 2).
+# Creates the config from the example once; never overwrites it. The
+# service is not started: edit the config first, then enable it.
+set -e
+install -d -m 700 /etc/threadhaul
+if [ ! -e /etc/threadhaul/config.json ]; then
+    install -m 600 /usr/share/threadhaul/config.example.json /etc/threadhaul/config.json
+    echo "ThreadHaul: edit /etc/threadhaul/config.json, then run: systemctl enable --now threadhaul"
+fi
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    # On upgrade, restart a running service so it uses the new binary.
+    systemctl try-restart threadhaul.service || true
+fi
+exit 0
