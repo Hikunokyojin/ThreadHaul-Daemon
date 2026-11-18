@@ -22,7 +22,7 @@ jobs:
       # until then releases are published unsigned. See README "Code signing".
       SIGNING: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
@@ -157,7 +157,7 @@ jobs:
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
